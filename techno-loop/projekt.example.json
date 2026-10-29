@@ -19,14 +19,16 @@
 
   "girls": [
     {
-      "name": "Girl 1",
-      "image": "bilder/girl1.png",
-      "look": "long platinum-blonde hair, black cropped top, silver chain necklace, black cargo pants"
+      "name": "Technogirl",
+      "image": "bilder/technogirl_1.png",
+      "images": ["bilder/technogirl_2.png"],
+      "look": "long voluminous wavy lavender-purple hair, hazel eyes, light freckles, glossy white space-age catsuit with purple stripes, small headset microphone"
     },
     {
-      "name": "Girl 2",
-      "image": "bilder/girl2.png",
-      "look": "dark brown hair in two high buns, neon-cyan mesh top, black shorts, fishnet sleeves"
+      "name": "Red Eva",
+      "image": "bilder/red_eva_1.png",
+      "images": ["bilder/red_eva_2.png"],
+      "look": "long wild wavy copper-red hair, green eyes, freckles, black glossy leather catsuit with thin red seams, black fingerless gloves, small headset microphone"
     }
   ],
 
@@ -48,13 +50,13 @@
       "action": "Behind a huge glowing DJ booth at the front of the main stage both women play techno: the left one turns the mixer knobs, the right one raises both hands and bobs her head to the beat. Behind them a gigantic mechanical sea turtle sculpture with glowing LED lines hovers over the stage and slowly moves its fins. Blue light beams sweep through the haze. The camera slowly pushes in."
     },
     {
-      "id": "closeup_girl1",
+      "id": "closeup_technogirl",
       "girls": [0],
       "tags": ["girls", "closeup"],
       "action": "Close-up of the woman wearing headphones, eyes closed, nodding to the kick drum with her fingers on a glowing jog wheel. Blue and red strobe flashes light her face, shallow depth of field."
     },
     {
-      "id": "closeup_girl2",
+      "id": "closeup_red_eva",
       "girls": [1],
       "tags": ["girls", "closeup"],
       "action": "Close-up of the woman tossing her hair and smiling at the crowd while dancing behind the decks, red rim light, laser fans behind her."
@@ -64,6 +66,12 @@
       "girls": true,
       "tags": ["girls"],
       "action": "Both women dance side by side at the edge of the stage, seen from a low angle in the crowd, arms raised, confetti falling, laser fans spreading above them."
+    },
+    {
+      "id": "eiskristall_buehne",
+      "girls": true,
+      "tags": ["girls"],
+      "action": "Both women stand behind the DJ desk on a stage of gigantic glowing blue ice crystals with a swirling blue energy portal behind them, snow sparkles drift through the air, they smile, wave to the crowd and move to the beat while violet lightning flickers at the edges."
     },
     {
       "id": "crowd_haende",

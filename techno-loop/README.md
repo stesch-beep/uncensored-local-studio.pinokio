@@ -72,7 +72,9 @@ dem Bass, der Hochtöner zittert mit den Hi-Hats.
    ein angehängtes „ (1)“ von Suno-Downloads wird weggelassen). Künstler für alle Songs ohne eigenen:
    `"default_artist"`. Titel/Künstler pro Song festlegen: `{"find": "…", "title": "…", "artist": "…"}`.
 3. **Bilder** nach `bilder\`:
-   - `girl1.png`, `girl2.png` – je ein gutes Bild deiner beiden Girls (für Identität/Wiedererkennung).
+   - Referenzfotos deiner Girls: `technogirl_1.png`, `technogirl_2.png`, `red_eva_1.png`, `red_eva_2.png`
+     (Gesicht nah + halbe Figur; pro Girl `"image"` plus beliebig viele unter `"images"`). Qwen Image 2.1 nutzt
+     bis zu 5 Fotos pro Girl, H3 Omni bis zu 4, Krea 2 eins.
    - optional `vorbild.jpg` – z. B. das Pinterest-Bild als Stil-Referenz (Bühne, Licht, Farben).
    - Keyframes (Standbild pro Szene mit den Girls) macht Schritt 0 automatisch nach `bilder\keyframes\<id>.png`.
      Eigene Bilder kannst du dort auch einfach ablegen (Dateiname = Szenen-id), dann werden sie benutzt.
@@ -83,7 +85,7 @@ dem Bass, der Hochtöner zittert mit den Hi-Hats.
 | Schritt | Datei | Was passiert |
 |---|---|---|
 | Test (optional) | `demo_test.bat` | Testlauf ohne Maestro mit künstlicher Musik – prüft ffmpeg/NVENC und den ganzen Ablauf |
-| 0 | `0_keyframes_erstellen.bat` | Standbild pro Girl-Szene aus `girl1.png` + `girl2.png` (Maestro: Qwen Image 2.1) → `bilder\keyframes\` |
+| 0 | `0_keyframes_erstellen.bat` | Standbild pro Girl-Szene aus den Fotos von Technogirl + Red Eva (Maestro: Qwen Image 2.1) → `bilder\keyframes\` |
 | 1 | `1_szenen_rendern.bat` | Schickt alle Szenen an Maestro (MiniMax H3), wartet, lädt die Clips nach `arbeitsordner\szenen\` |
 | 2 | `2_vorschau.bat` | Rendert 2 Minuten ab Minute 5 → `ausgabe\..._vorschau.mp4` zum Prüfen |
 | 3 | `3_video_bauen.bat` | Rendert das komplette Video → `ausgabe\techno_girls_1h.mp4` + `..._youtube_beschreibung.txt` |

@@ -19,21 +19,34 @@ from pathlib import Path
 
 from .config import ConfigError, Project
 from .maestro import (MaestroClient, MaestroError, _cast, _looks_like_comfyui, connect, find_local,
-                      free_comfyui_vram, keyframe_path_for, release_maestro_vram, run_job, scene_seed)
+                      free_comfyui_vram, girl_images, keyframe_path_for, release_maestro_vram, run_job,
+                      scene_seed)
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 
 
-def keyframe_prompt(project: Project, scene: dict) -> str:
+def _image_numbers(nums: list[int]) -> str:
+    if len(nums) == 1:
+        return f"image {nums[0]}"
+    return "images " + ", ".join(str(n) for n in nums[:-1]) + f" and {nums[-1]}"
+
+
+def keyframe_prompt(project: Project, scene: dict, groups: list[list[Path]] | None = None) -> str:
+    """groups = reference photos per girl, in upload order (image 1, image 2, …)."""
     if scene.get("keyframe_prompt"):
         return scene["keyframe_prompt"]
     cast = _cast(project, scene)
     looks = [g.get("look") or g.get("description") or "" for g in cast]
+    counts = [len(g) for g in groups] if groups else [1] * len(cast)
+    numbers, n = [], 1
+    for c in counts:
+        numbers.append(list(range(n, n + max(1, c))))
+        n += max(1, c)
     if len(cast) >= 2:
-        who = (f"The woman from image 1 (the first reference image) stands on the left ({looks[0]}), "
-               f"the woman from image 2 (the second reference image) on the right ({looks[1]}).")
+        who = (f"The woman shown in {_image_numbers(numbers[0])} stands on the left ({looks[0]}), "
+               f"the woman shown in {_image_numbers(numbers[1])} on the right ({looks[1]}).")
     else:
-        who = f"The woman from image 1 (the reference image) ({looks[0]})."
+        who = f"The woman shown in {_image_numbers(numbers[0])} ({looks[0]})."
     action = scene.get("action", "").strip()
     return (
         f"{who} {action} {project['style'].strip().rstrip('.')}. "
@@ -48,7 +61,7 @@ def scenes_needing_keyframes(project: Project, only=None, force=False) -> list[t
     for scene in project["scenes"]:
         if scene.get("skip") or (only and scene["id"] not in only):
             continue
-        if not any((p := project.path(g.get("image"))) and p.is_file() for g in _cast(project, scene)):
+        if not any(girl_images(project, g) for g in _cast(project, scene)):
             continue
         target = keyframe_path_for(project, scene)
         if target is None:
@@ -60,13 +73,11 @@ def scenes_needing_keyframes(project: Project, only=None, force=False) -> list[t
     return out
 
 
-def _girl_images(project: Project, scene: dict) -> list[Path]:
-    imgs = []
-    for girl in _cast(project, scene):
-        p = project.path(girl.get("image"))
-        if p and p.is_file():
-            imgs.append(p)
-    return imgs[:2]
+def _girl_images(project: Project, scene: dict, model: str = "") -> list[list[Path]]:
+    """Reference photos per girl. Krea 2 Edit takes 2 images in total (one per girl), Qwen Image 2.1
+    up to 10, ComfyUI workflows as many as they have LoadImage nodes."""
+    per_girl = 1 if "krea" in model.lower() else 5
+    return [imgs[:per_girl] for g in _cast(project, scene) if (imgs := girl_images(project, g))]
 
 
 def _save_image(data: bytes, suffix: str, target: Path) -> None:
@@ -85,11 +96,11 @@ def _save_image(data: bytes, suffix: str, target: Path) -> None:
 
 # ── Maestro ─────────────────────────────────────────────────────────────────
 
-def _maestro_keyframe(client: MaestroClient, project: Project, scene: dict, images: list[Path],
+def _maestro_keyframe(client: MaestroClient, project: Project, scene: dict, groups: list[list[Path]],
                       defaults: dict, seed: int, uploads: dict) -> tuple[bytes, str]:
     kcfg = project["keyframes"]
     refs = []
-    for img in images:
+    for img in [i for g in groups for i in g]:
         if img not in uploads:
             uploads[img] = client.upload(img)
         refs.append(uploads[img])
@@ -98,7 +109,7 @@ def _maestro_keyframe(client: MaestroClient, project: Project, scene: dict, imag
         body.pop(key, None)
     body.update({
         "model_type": kcfg["model"],
-        "prompt": keyframe_prompt(project, scene),
+        "prompt": keyframe_prompt(project, scene, groups),
         "image_refs": refs,
         # "I" = all reference images are people (Krea 2 Edit); the model's own default letters stay otherwise.
         "video_prompt_type": kcfg.get("video_prompt_type", "I"),
@@ -175,9 +186,9 @@ def fill_workflow(workflow: dict, values: dict) -> dict:
     nodes = sorted(wf.items(), key=lambda kv: _node_order(kv[0]))
     if "IMAGE1" not in found:
         loaders = [n for _, n in nodes if n.get("class_type") == "LoadImage"]
-        for node, key in zip(loaders, ("IMAGE1", "IMAGE2")):
-            if key in values:
-                node["inputs"]["image"] = values[key]
+        for k, node in enumerate(loaders, 1):
+            if f"IMAGE{k}" in values:
+                node["inputs"]["image"] = values[f"IMAGE{k}"]
     if "SEED" not in found:
         for _, node in nodes:
             for name in ("seed", "noise_seed"):
@@ -232,11 +243,18 @@ def _set_positive_prompt(wf: dict, prompt: str) -> bool:
     return False
 
 
-def _comfy_keyframe(client: ComfyClient, project: Project, scene: dict, images: list[Path],
+def _comfy_keyframe(client: ComfyClient, project: Project, scene: dict, groups: list[list[Path]],
                     workflow: dict, seed: int, uploads: dict) -> tuple[bytes, str]:
     kcfg = project["keyframes"]
     w, _, h = kcfg["resolution"].partition("x")
-    values = {"PROMPT": keyframe_prompt(project, scene), "SEED": int(seed), "WIDTH": int(w), "HEIGHT": int(h)}
+    loaders = sum(1 for n in workflow.values() if n.get("class_type") == "LoadImage")
+    if loaders and "{{IMAGE" not in json.dumps(workflow):
+        # Without placeholders the photos go into the LoadImage nodes: one per girl if there are few.
+        if sum(len(g) for g in groups) > loaders:
+            groups = [g[:1] for g in groups]
+    images = [i for g in groups for i in g]
+    values = {"PROMPT": keyframe_prompt(project, scene, groups), "SEED": int(seed),
+              "WIDTH": int(w), "HEIGHT": int(h)}
     for k, img in enumerate(images, 1):
         if img not in uploads:
             uploads[img] = client.upload_image(img)
@@ -279,9 +297,9 @@ def make_keyframes(project: Project, *, only=None, force=False, dry_run=False, u
     engine = kcfg.get("engine", "maestro")
     if dry_run:
         for scene, target in todo:
-            imgs = ", ".join(p.name for p in _girl_images(project, scene))
+            imgs = ", ".join(p.name for g in _girl_images(project, scene, kcfg["model"]) for p in g)
             print(f"\n{scene['id']} → {target}  ({engine}, {kcfg['model'] if engine == 'maestro' else 'Workflow'}, Referenzen: {imgs})")
-            print("  " + keyframe_prompt(project, scene))
+            print("  " + keyframe_prompt(project, scene, _girl_images(project, scene, kcfg["model"])))
         return 0
     uploads: dict = {}
     if engine == "comfyui":
@@ -316,7 +334,7 @@ def make_keyframes(project: Project, *, only=None, force=False, dry_run=False, u
             )
     failures = 0
     for index, (scene, target) in enumerate(todo, 1):
-        images = _girl_images(project, scene)
+        images = _girl_images(project, scene, kcfg["model"] if engine != "comfyui" else "")
         for cand in range(1, int(kcfg.get("candidates") or 1) + 1):
             out = target if cand == 1 else target.with_name(f"{target.stem}__alt{cand}{target.suffix}")
             seed = scene_seed(project, f"keyframe:{scene['id']}", cand)

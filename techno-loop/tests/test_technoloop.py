@@ -341,7 +341,7 @@ class KeyframeTest(unittest.TestCase):
         self.assertEqual(req["video_length"], 1)
         self.assertEqual(req["video_prompt_type"], "I")
         self.assertEqual(len(req["image_refs"]), 2)
-        self.assertIn("first reference image", req["prompt"])
+        self.assertIn("woman shown in image 1", req["prompt"])
         target = self.tmp / "bilder" / "keyframes" / "dj.png"
         self.assertTrue(target.is_file())
         # The scene now renders as a seamless H3 loop from that keyframe.
@@ -398,6 +398,23 @@ class KeyframeTest(unittest.TestCase):
         self.assertEqual(len(req["image_refs"]), 2)
         self.assertIn("image 1", req["prompt"])
         self.assertIn("image 2", req["prompt"])
+
+    def test_several_photos_per_girl(self):
+        from technoloop.keyframes import make_keyframes
+
+        (self.tmp / "bilder" / "girl1b.png").write_bytes((self.tmp / "bilder" / "girl1.png").read_bytes())
+        project = self._project()
+        project.data["girls"][0]["images"] = ["bilder/girl1b.png"]
+        FakeMaestro.models |= {"qwen_image_21_7B"}
+        make_keyframes(project)
+        req = FakeMaestro.requests[-1]
+        self.assertEqual(len(req["image_refs"]), 3)
+        self.assertIn("woman shown in images 1 and 2 stands on the left", req["prompt"])
+        self.assertIn("woman shown in image 3 on the right", req["prompt"])
+        # Krea 2 Edit only takes two pictures: one per girl.
+        FakeMaestro.models -= {"qwen_image_21_7B"}
+        make_keyframes(project, force=True)
+        self.assertEqual(len(FakeMaestro.requests[-1]["image_refs"]), 2)
 
     def test_comfyui_workflow_placeholders(self):
         from technoloop.keyframes import make_keyframes

@@ -211,6 +211,16 @@ def _cast_sentence(cast: list[dict]) -> str:
     return "Women DJs: " + "; ".join(f"a woman, {look}" for look in looks) + "."
 
 
+def girl_images(project: Project, girl: dict) -> list[Path]:
+    """All existing reference photos of one girl ("image" plus optional "images")."""
+    paths: list[Path] = []
+    for value in [girl.get("image"), *(girl.get("images") or [])]:
+        p = project.path(value)
+        if p and p.is_file() and p not in paths:
+            paths.append(p)
+    return paths
+
+
 def keyframe_path_for(project: Project, scene: dict) -> Path | None:
     """The scene's keyframe: "keyframe" from projekt.json, else bilder/keyframes/<id>.png
     (where the 'keyframes' command saves generated ones)."""
@@ -227,7 +237,7 @@ def scene_mode(project: Project, scene: dict) -> str:
     keyframe = keyframe_path_for(project, scene)
     if keyframe and keyframe.is_file():
         return "keyframe"
-    if any((p := project.path(g.get("image"))) and p.is_file() for g in _cast(project, scene)):
+    if any(girl_images(project, g) for g in _cast(project, scene)):
         return "omni"
     return "text"
 
@@ -501,10 +511,10 @@ def render_scenes(project: Project, *, only: list[str] | None = None, force: boo
         elif mode == "omni":
             references = []
             for girl in _cast(project, scene):
-                img = project.path(girl.get("image"))
-                if img and img.is_file():
-                    look = girl.get("look") or girl.get("description") or ""
-                    role = f"{girl.get('name', 'DJ')}, {look}".strip(", ")
+                look = girl.get("look") or girl.get("description") or ""
+                role = f"{girl.get('name', 'DJ')}, {look}".strip(", ")
+                # H3 takes at most 9 reference images: up to 4 per girl, room for the style picture.
+                for img in girl_images(project, girl)[:4]:
                     references.append({"type": "image", "path": upload(img), "role": role, "image_intent": "identity"})
             style_ref = project.path(scene.get("style_reference") or project.get("style_reference"))
             if style_ref and style_ref.is_file():
