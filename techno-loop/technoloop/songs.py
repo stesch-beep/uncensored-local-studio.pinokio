@@ -108,9 +108,13 @@ def resolve_playlist(project: Project) -> list[Song]:
             return
         seen.add(key)
         title, artist = parse_song_name(path)
+        # "song_titles": {"OrganoftheGods": "Organ of the Gods"} fixes titles of songs pulled in via "all_in"
+        renamed = next((new for part, new in (project.get("song_titles") or {}).items()
+                        if normalize(part) and normalize(part) in normalize(path.stem)), None)
+        explicit_title = entry.get("title") or renamed
         songs.append(Song(
-            path, entry.get("title") or title, entry.get("artist", artist or default_artist),
-            explicit=bool(entry.get("title")),
+            path, explicit_title or title, entry.get("artist", artist or default_artist),
+            explicit=bool(explicit_title),
         ))
 
     for entry in entries:

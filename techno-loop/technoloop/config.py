@@ -221,8 +221,12 @@ class Project:
 def parse_song_name(path: Path) -> tuple[str, str]:
     """'03 - Artist - Title.mp3' -> ('Title', 'Artist'); 'Title.mp3' -> ('Title', '')."""
     stem = re.sub(r"^\s*\d{1,3}\s*[-._)]\s*", "", path.stem)
-    stem = re.sub(r"\s*\(\d{1,2}\)$", "", stem)  # "Song (1).wav" = second download of the same song
+    stem = re.sub(r"\s*\[\d+m\d+s\s*-\s*\d+m\d+s\]", "", stem)  # Suno clip range "[0m00s-3m28s]"
+    stem = re.sub(r"\s*\(\d{1,2}\)$", "", stem.strip())  # "Song (1).wav" = second download of the same song
+    stem = re.sub(r"\s*Mastered\s*HIGH\s*END.*$", "", stem, flags=re.IGNORECASE)  # mastering-chain suffix
     stem = stem.replace("_", " ").strip()
+    if " " not in stem:  # "BerlinPowerplant" -> "Berlin Powerplant"
+        stem = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", stem)
     parts = [p.strip() for p in re.split(r"\s+[-–—]\s+", stem) if p.strip()]
     if len(parts) >= 2:
         return " - ".join(parts[1:]), parts[0]
