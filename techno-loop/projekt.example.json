@@ -111,11 +111,12 @@
     }
   ],
 
-  "_hinweis_songs": "Songs in Abspiel-Reihenfolge. {\"find\": \"Name\"} sucht die Datei in den song_search-Ordnern. Weitere Songs mit 4_song_anhaengen.bat hinten anbauen.",
+  "_hinweis_songs": "Songs in Abspiel-Reihenfolge. {\"find\": \"Name\"} sucht die Datei in den song_search-Ordnern, {\"all_in\": \"Ordner\"} nimmt alle Songs eines Ordners (neue Dateien kommen hinten dran). Doppelte werden nur einmal gespielt.",
   "song_search": [
     "musik",
     "~/Downloads",
     "~/Downloads/suno",
+    "~/Downloads/Suno-WAV",
     "C:/Download",
     "C:/Download/suno",
     "F:/Pinokio Projekt Fire und ice"
@@ -126,7 +127,8 @@
     {"find": "Accordion Rave Bounce 153"},
     {"find": "Tubular Bells of Berlin"},
     {"find": "Ocarina of the Underground"},
-    {"find": ["Didgeridoo", "Digeridoo", "Diggeridoo", "Didjeridoo", "Didgeridu", "Didjeridu"]}
+    {"find": ["Didgeridoo", "Digeridoo", "Diggeridoo", "Didjeridoo", "Didgeridu", "Didjeridu"]},
+    {"all_in": "~/Downloads/Suno-WAV"}
   ],
 
   "audio": {

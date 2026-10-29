@@ -67,7 +67,7 @@ DEFAULTS = {
     "songs": [],
     # Where {"find": "..."} playlist entries and the 'lieder' / 'song-dazu' commands look for songs.
     "song_search": [
-        "musik", "~/Downloads", "~/Downloads/suno", "C:/Download", "C:/Download/suno",
+        "musik", "~/Downloads", "~/Downloads/suno", "~/Downloads/Suno-WAV", "C:/Download", "C:/Download/suno",
         "C:/Downloads", "C:/Downloads/suno", "F:/Pinokio Projekt Fire und ice", "F:/Pinokio Projekt",
     ],
     "song_search_depth": 3,

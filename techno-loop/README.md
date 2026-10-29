@@ -57,9 +57,13 @@ dem Bass, der Hochtöner zittert mit den Hi-Hats.
      {"find": "Accordion Rave Bounce 153"},
      {"find": "Tubular Bells of Berlin"},
      {"find": "Ocarina of the Underground"},
-     {"find": ["Didgeridoo", "Digeridoo", "Diggeridoo", "Didjeridoo", "Didgeridu", "Didjeridu"]}
+     {"find": ["Didgeridoo", "Digeridoo", "Diggeridoo", "Didjeridoo", "Didgeridu", "Didjeridu"]},
+     {"all_in": "~/Downloads/Suno-WAV"}
    ]
    ```
+   `all_in` nimmt **alle** Songs aus einem Ordner (hier `C:\Users\<du>\Downloads\Suno-WAV`). Die Reihenfolge
+   wird beim ersten Mal festgehalten; WAVs, die du später dazulegst, kommen hinten dran. Songs, die schon
+   weiter oben stehen, werden nicht doppelt gespielt.
    Eine Liste bei `find` = verschiedene Schreibweisen, die erste passende Datei wird genommen.
    Ist ein Song noch nicht heruntergeladen, wird er mit einem Hinweis übersprungen und kommt automatisch
    dazu, sobald die Datei im Suchordner liegt.

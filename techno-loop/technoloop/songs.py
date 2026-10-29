@@ -100,10 +100,43 @@ def resolve_playlist(project: Project) -> list[Song]:
     default_artist = project.get("default_artist") or ""
     songs: list[Song] = []
     missing: list[str] = []
+    seen: set[str] = set()
+
+    def add(path: Path, entry: dict) -> None:
+        key = os.path.normcase(str(path.resolve()))
+        if key in seen:  # e.g. a song named by "find" that is also in an "all_in" folder
+            return
+        seen.add(key)
+        title, artist = parse_song_name(path)
+        songs.append(Song(
+            path, entry.get("title") or title, entry.get("artist", artist or default_artist),
+            explicit=bool(entry.get("title")),
+        ))
+
     for entry in entries:
         if isinstance(entry, str):
             entry = {"file": entry}
         if entry.get("skip"):
+            continue
+        if entry.get("all_in"):
+            # Every song in a folder. The order is pinned on first use; files added later go to the end,
+            # so appending songs leaves the start of the video unchanged.
+            folder = project.path(entry["all_in"])
+            if not folder or not folder.is_dir():
+                missing.append(f"Ordner {entry['all_in']}")
+                continue
+            key = json.dumps({"all_in": entry["all_in"]})
+            pinned = [Path(p) for p in lock.get(key, []) if Path(p).is_file()]
+            present = sorted((p for p in folder.iterdir() if p.suffix.lower() in AUDIO_EXTENSIONS),
+                             key=lambda p: p.name.lower())
+            known = {os.path.normcase(str(p.resolve())) for p in pinned}
+            new = [p for p in present if os.path.normcase(str(p.resolve())) not in known]
+            if new:
+                print(f"  {len(new)} Song(s) aus {folder} " + ("dazu." if pinned else "gefunden."))
+                lock[key] = [str(p) for p in pinned + new]
+                changed = True
+            for path in pinned + new:
+                add(path, {})
             continue
         path = project.path(entry.get("file"))
         if entry.get("find"):
@@ -125,11 +158,7 @@ def resolve_playlist(project: Project) -> list[Song]:
                 changed = True
         if not path or not path.is_file():
             raise ConfigError(f"Song nicht gefunden: {entry.get('file') or entry.get('find')}")
-        title, artist = parse_song_name(path)
-        songs.append(Song(
-            path, entry.get("title") or title, entry.get("artist", artist or default_artist),
-            explicit=bool(entry.get("title")),
-        ))
+        add(path, entry)
     new_missing = [m for m in missing if m not in _warned]
     if new_missing:
         folders = ", ".join(str(p) for p in search_folders(project)) or "keine"

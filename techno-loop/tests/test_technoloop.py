@@ -68,6 +68,25 @@ class Basics(unittest.TestCase):
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
+    def test_all_songs_of_a_folder_new_ones_go_last(self):
+        tmp = Path(tempfile.mkdtemp())
+        try:
+            (tmp / "Suno-WAV").mkdir()
+            for name in ("Tubular Bells of Berlin.wav", "Halfway to Valhalla.wav", "Koto Cyber-Trance 158.wav"):
+                (tmp / "Suno-WAV" / name).write_bytes(b"RIFF")
+            cfg = {"song_search": ["Suno-WAV"],
+                   "songs": [{"find": "Tubular Bells of Berlin"}, {"all_in": "Suno-WAV"}]}
+            (tmp / "projekt.json").write_text(json.dumps(cfg))
+            titles = [s.title for s in load_project(tmp / "projekt.json").songs()]
+            self.assertEqual(titles, ["Tubular Bells of Berlin", "Halfway to Valhalla", "Koto Cyber-Trance 158"])
+            # A later download is appended at the end, even if its name sorts first.
+            (tmp / "Suno-WAV" / "Accordion Rave Bounce 153.wav").write_bytes(b"RIFF")
+            titles = [s.title for s in load_project(tmp / "projekt.json").songs()]
+            self.assertEqual(titles[-1], "Accordion Rave Bounce 153")
+            self.assertEqual(len(titles), 4)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
     def test_normalize_for_search(self):
         from technoloop.songs import normalize
 
