@@ -116,7 +116,9 @@ class TitleOverlay:
         inner_max = self.max_w - 2 * pad_x - bar_w - int(14 * s)
         label = self.cfg.get("label", "NOW PLAYING")
         if self.cfg.get("show_number", True):
-            label = f"{label}  ·  {entry.number:02d} / {entry.count:02d}"
+            # Without the total by default: appending songs then leaves earlier titles unchanged.
+            total = f" / {entry.count:02d}" if self.cfg.get("show_total", False) else ""
+            label = f"{label}  ·  {entry.number:02d}{total}"
         f_label = self._bold(int(20 * s))
         f_title, title = _fit(probe, self._text(entry.title), self._bold, int(50 * s), inner_max, 0.04)
         f_artist, artist = _fit(probe, self._text(entry.artist or ""), self._light, int(30 * s), inner_max, 0.08)

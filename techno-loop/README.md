@@ -1,9 +1,10 @@
 # Techno Loop – 1-Stunden-Musikvideo aus wenigen KI-Szenen
 
-Baut ein ca. 60 Minuten langes YouTube-Video im Stil großer Festival-Bühnen (riesige
-Schildkröten-Bühne, Crowd mit erhobenen Händen, Laser, blau/rotes Licht), mit deinen
+Baut ein langes YouTube-Musikvideo (Ziel: ca. 60 Minuten / ca. 15 Songs) im Stil großer Festival-Bühnen
+(riesige Schildkröten-Bühne, Crowd mit erhobenen Händen, Laser, blau/rotes Licht), mit deinen
 **zwei Techno-Girls** als DJs, **Lautsprechern, deren Membranen im Takt des Basses springen**,
-und **ca. 15 Songs**, deren **Titel immer eingeblendet** sind.
+und Songs, deren **Titel immer eingeblendet** sind. Song 1 ist **„Symphonie und Odyssee“**;
+weitere Songs werden einfach **hinten angebaut** – dabei wird nur der neue Teil gerendert.
 
 Du generierst dafür **keine Stunde Videomaterial**, sondern nur etwa **10 Szenen × 2 Varianten
 à ~7 Sekunden** mit **Maestro** und **MiniMax H3 (Turbo, 4 Schritte)** auf deiner RTX 5080.
@@ -47,12 +48,18 @@ dem Bass, der Hochtöner zittert mit den Hi-Hats.
 ## Einrichtung (einmalig)
 
 1. `setup.bat` doppelklicken. Legt `.venv`, `projekt.json`, `musik\` und `bilder\` an.
-2. **Songs** nach `musik\` kopieren. Der Titel kommt aus den MP3-Tags oder aus dem Dateinamen:
-   `01 - Künstler - Songtitel.mp3` → „KÜNSTLER / SONGTITEL“. Reihenfolge = alphabetisch nach Dateiname
-   (oder `"shuffle": true`). Alternativ in `projekt.json` unter `"songs"` explizit eintragen:
+2. **Songs**: In `projekt.json` steht schon Song 1:
    ```json
-   "songs": [{"file": "musik/track1.mp3", "artist": "Nova & Mila", "title": "Turtle Stage"}]
+   "songs": [ {"find": "Symphonie und Odyssee"} ]
    ```
+   `find` sucht die Datei (WAV/MP3/FLAC, Groß/Klein, Umlaute und `_` egal) in den Ordnern unter
+   `"song_search"`: `musik\`, `Downloads`, `Downloads\suno`, `C:\Download`, `C:\Download\suno` und
+   `F:\Pinokio Projekt Fire und ice` (bis 3 Ordner tief). Der Fundort wird in
+   `arbeitsordner\song_fundorte.json` gemerkt. Liegt der Song woanders, den Ordner in `song_search`
+   ergänzen oder direkt `{"file": "F:/…/Symphonie und Odyssee.wav"}` eintragen.
+   Der angezeigte Titel kommt aus den Datei-Tags oder dem Dateinamen (`01 - Künstler - Titel.wav`;
+   ein angehängtes „ (1)“ von Suno-Downloads wird weggelassen). Künstler für alle Songs ohne eigenen:
+   `"default_artist"`. Titel/Künstler pro Song festlegen: `{"find": "…", "title": "…", "artist": "…"}`.
 3. **Bilder** nach `bilder\`:
    - `girl1.png`, `girl2.png` – je ein gutes Bild deiner beiden Girls (für Identität/Wiedererkennung).
    - optional `vorbild.jpg` – z. B. das Pinterest-Bild als Stil-Referenz (Bühne, Licht, Farben).
@@ -68,6 +75,7 @@ dem Bass, der Hochtöner zittert mit den Hi-Hats.
 | 1 | `1_szenen_rendern.bat` | Schickt alle Szenen an Maestro (MiniMax H3), wartet, lädt die Clips nach `arbeitsordner\szenen\` |
 | 2 | `2_vorschau.bat` | Rendert 2 Minuten ab Minute 5 → `ausgabe\..._vorschau.mp4` zum Prüfen |
 | 3 | `3_video_bauen.bat` | Rendert das komplette Video → `ausgabe\techno_girls_1h.mp4` + `..._youtube_beschreibung.txt` |
+| 4 | `4_song_anhaengen.bat` | Listet alle Songs aus den Suchordnern (z. B. `C:\Download\suno`), du wählst per Nummer → danach wieder Schritt 3 |
 
 **Maestro muss bei Schritt 1 laufen.** Die Adresse wird automatisch gesucht (`"url": "auto"`).
 Klappt das nicht, die Adresse aus Maestros *Open Web UI* in `projekt.json` eintragen, z. B. `"url": "http://127.0.0.1:42003"`.
@@ -80,7 +88,25 @@ Nützliche Optionen (an die .bat anhängen oder in der Konsole):
 1_szenen_rendern.bat --neu --nur dj_pult     vorhandene Clips dieser Szene neu rendern
 2_vorschau.bat --ab 30:00                    Vorschau ab Minute 30
 3_video_bauen.bat --workers 4                mehr parallele Render-Prozesse
+3_video_bauen.bat --neu-schneiden            Schnitt komplett neu würfeln (sonst bleibt der Anfang gleich)
+4_song_anhaengen.bat --suche "Feuer und Eis" Song direkt per Name anhängen
 ```
+
+## Songs anbauen
+
+1. `4_song_anhaengen.bat` – zeigt alle WAV/MP3 aus den Suchordnern (die schon benutzten sind markiert).
+   Nummer(n) eingeben, z. B. `3` oder `3,7,12` – die Songs kommen in dieser Reihenfolge **hinten** an die Playlist.
+2. `3_video_bauen.bat` – das Tool merkt sich den Schnitt und alle fertig gerenderten Teile
+   (`arbeitsordner\render\teile`, je ca. 2 Minuten). Neu gerendert wird nur ab dem Übergang in den
+   neuen Song (plus der eine Teil, in dem vorher das Ende ausgeblendet wurde). Der Anfang des Videos
+   bleibt Bild für Bild gleich, neue Szenen-Clips tauchen erst im neuen Teil auf.
+
+Die Videolänge ergibt sich aus den Songs (`"duration_minutes": 0`). Die Songnummer wird ohne
+Gesamtzahl eingeblendet („NOW PLAYING · 03“), damit sich frühere Teile beim Anbauen nicht ändern
+(`"titles": {"show_total": true}` zeigt „03 / 15“, dann rendert ein neuer Song aber alles neu).
+
+Songs ohne festen Beat (z. B. orchestrale Stücke) erkennt das Tool automatisch und schneidet dort auf
+die stärksten Akzente statt auf ein Beat-Raster.
 
 Gefällt dir ein Clip nicht: einfach die MP4 in `arbeitsordner\szenen\` löschen und Schritt 1 erneut starten –
 fertige Clips werden übersprungen. Eigene fertige Clips (z. B. direkt in Maestro erzeugt) kannst du in
@@ -127,12 +153,13 @@ Weitere Szenen-Optionen: `frames`, `variants`, `weight` (wie oft sie vorkommt), 
 
 | Bereich | Schlüssel | Standard | Bedeutung |
 |---|---|---|---|
-| audio | `duration_minutes` | 60 | Mindestlänge; ist die Playlist kürzer, werden Songs wiederholt |
+| audio | `duration_minutes` | 0 | 0 = so lang wie die Songs; sonst Mindestlänge (Songs werden wiederholt – nicht zum Anbauen) |
 | audio | `crossfade_seconds` | 6 | Überblendung zwischen Songs |
 | audio | `target_lufs` | -14 | YouTube-Lautheit, alle Songs gleich laut |
 | video | `width`/`height`/`fps` | 1920/1080/24 | 24 fps = H3-Bildrate (kein Ruckeln) |
 | video | `codec` | h264 | `hevc` oder `av1` gehen mit der RTX 5080 auch |
 | video | `workers` | 3 | parallele Render-Prozesse |
+| video | `chunk_seconds` | 120 | Länge der zwischengespeicherten Teile |
 | montage | `cut_beats_high` / `cut_beats_low` | [4,8,8,16] / [8,16,16,32] | Schnittlängen in Beats (Drop / Breakdown) |
 | montage | `zoom_range`, `speed_range`, `mirror`, `reverse_chance` | | Variationen pro Einstellung |
 | montage | `bass_zoom`, `light_pump`, `flash_chance` | 0.02, 0.12, 0.12 | wie stark das Bild zur Kick pumpt |
@@ -141,6 +168,18 @@ Weitere Szenen-Optionen: `frames`, `variants`, `weight` (wie oft sie vorkommt), 
 | speakers | `image` + `cone` | – | eigenes Lautsprecher-PNG, `cone` = [x, y, radius] der Membran (relativ) |
 | titles | `position` | bottom-center | auch `top-left`, `bottom-left`, `top-center` |
 | titles | `intro_card`, `label`, `accent`, `watermark` | | große Titel-Einblendung pro Song, Texte/Farbe, Kanalname |
+
+## Andere Programme
+
+Maestro bleibt der Generator für die Video-Clips (H3). Die anderen Programme passen so dazu:
+
+- **Fooocus / ComfyUI**: Keyframes und Girl-Bilder erzeugen (z. B. mit FaceID/PuLID für gleiche Gesichter),
+  als PNG nach `bilder\` legen und bei der Szene als `keyframe` eintragen → nahtlose H3-Loops.
+- **MiniMax H3 Studio** oder **ComfyUI-H3-Workflows**: fertige Clips dort erzeugen und in einen Ordner legen,
+  der unter `"clips_folder"` steht (Dateiname mit `loop`, wenn Anfang = Ende).
+- **Blender / Unreal Engine**: z. B. einen echten 3D-Lautsprecher rendern (Frontansicht, PNG mit Transparenz)
+  und als `speakers.image` + `speakers.cone` eintragen; oder eigene Bühnen-Clips nach `clips_folder`.
+- **DaVinci Resolve**: das fertige MP4 für Feinschliff (Grading, Intro/Outro, Logo) importieren.
 
 ## YouTube
 

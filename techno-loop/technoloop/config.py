@@ -48,11 +48,18 @@ DEFAULTS = {
     "clips_folder": "",
     "songs_folder": "musik",
     "songs": [],
+    # Where {"find": "..."} playlist entries and the 'lieder' / 'song-dazu' commands look for songs.
+    "song_search": [
+        "musik", "~/Downloads", "~/Downloads/suno", "C:/Download", "C:/Download/suno",
+        "C:/Downloads", "C:/Downloads/suno", "F:/Pinokio Projekt Fire und ice", "F:/Pinokio Projekt",
+    ],
+    "song_search_depth": 3,
+    "default_artist": "",
     "audio": {
         "crossfade_seconds": 6.0,
         "target_lufs": -14.0,
         "true_peak": -1.0,
-        "duration_minutes": 60,
+        "duration_minutes": 0,
         "shuffle": False,
         "sample_rate": 48000,
         "bitrate": "320k",
@@ -67,6 +74,7 @@ DEFAULTS = {
         "quality": 19,
         "workers": 3,
         "clip_cache": 4,
+        "chunk_seconds": 120,
     },
     "montage": {
         "cut_beats_high": [4, 8, 8, 16],
@@ -108,6 +116,7 @@ DEFAULTS = {
         "label": "NOW PLAYING",
         "accent": "#00c8ff",
         "show_number": True,
+        "show_total": False,
         "show_progress": True,
         "intro_card": True,
         "intro_seconds": 4.5,
@@ -152,6 +161,7 @@ class Song:
 class Project:
     data: dict
     base_dir: Path
+    config_path: Path | None = None
 
     def __getitem__(self, key):
         return self.data[key]
@@ -182,35 +192,15 @@ class Project:
         return self.path(self.data["output_dir"])
 
     def songs(self) -> list[Song]:
-        songs: list[Song] = []
-        for entry in self.data.get("songs") or []:
-            if isinstance(entry, str):
-                entry = {"file": entry}
-            path = self.path(entry.get("file"))
-            if not path or not path.is_file():
-                raise ConfigError(f"Song nicht gefunden: {entry.get('file')}")
-            title, artist = parse_song_name(path)
-            songs.append(Song(
-                path, entry.get("title") or title, entry.get("artist", artist), explicit=bool(entry.get("title")),
-            ))
-        if not songs:
-            folder = self.path(self.data.get("songs_folder"))
-            if folder and folder.is_dir():
-                for path in sorted(folder.iterdir(), key=lambda p: p.name.lower()):
-                    if path.suffix.lower() in AUDIO_EXTENSIONS:
-                        title, artist = parse_song_name(path)
-                        songs.append(Song(path, title, artist))
-        if not songs:
-            raise ConfigError(
-                "Keine Songs gefunden. Lege MP3/WAV/FLAC-Dateien in den Ordner "
-                f"'{self.data.get('songs_folder')}' oder trage sie unter \"songs\" ein."
-            )
-        return songs
+        from .songs import resolve_playlist
+
+        return resolve_playlist(self)
 
 
 def parse_song_name(path: Path) -> tuple[str, str]:
     """'03 - Artist - Title.mp3' -> ('Title', 'Artist'); 'Title.mp3' -> ('Title', '')."""
     stem = re.sub(r"^\s*\d{1,3}\s*[-._)]\s*", "", path.stem)
+    stem = re.sub(r"\s*\(\d{1,2}\)$", "", stem)  # "Song (1).wav" = second download of the same song
     stem = stem.replace("_", " ").strip()
     parts = [p.strip() for p in re.split(r"\s+[-–—]\s+", stem) if p.strip()]
     if len(parts) >= 2:
@@ -228,7 +218,7 @@ def load_project(path: str | os.PathLike) -> Project:
         raise ConfigError(
             f"{config_path.name} ist kein gültiges JSON (Zeile {error.lineno}, Spalte {error.colno}): {error.msg}"
         ) from error
-    project = Project(_deep_merge(DEFAULTS, raw), config_path.parent)
+    project = Project(_deep_merge(DEFAULTS, raw), config_path.parent, config_path)
     for index, scene in enumerate(project.data["scenes"]):
         if not scene.get("id"):
             raise ConfigError(f"Szene {index + 1} hat keine \"id\".")

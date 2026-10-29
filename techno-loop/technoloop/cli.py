@@ -42,18 +42,23 @@ def cmd_scenes(args) -> int:
     return 1 if failures else 0
 
 
-def _prepare(project, config_path: str):
+def _prepare(project, fresh_cut: bool = False):
     from .audio import build_mix, analyze
-    from .montage import collect_clips, describe, plan_edl, save_edl
+    from .montage import collect_clips, describe, plan_edl, reusable_prefix, save_edl
 
     mix = build_mix(project)
     analysis = analyze(project, mix)
     clips = collect_clips(project)
-    segments = plan_edl(project, clips, analysis, mix.timeline)
     state = project.work_dir / "render"
     state.mkdir(parents=True, exist_ok=True)
+    prefix = [] if fresh_cut else reusable_prefix(
+        state / "edl.json", project, clips, mix.timeline, mix.crossfade, mix.end_fade)
+    if prefix:
+        print(f"Schnitt der ersten {_fmt(prefix[-1].t1, prefix[-1].t1 >= 3600)} bleibt wie beim letzten Mal "
+              f"({len(prefix)} Schnitte), nur der Rest wird neu geplant.")
+    segments = plan_edl(project, clips, analysis, mix.timeline, prefix)
     analysis.save(state / "analysis.npz")
-    save_edl(state / "edl.json", clips, segments)
+    save_edl(state / "edl.json", clips, segments, project, mix.timeline, mix.crossfade, mix.end_fade)
     (state / "timeline.json").write_text(
         json.dumps([e.__dict__ for e in mix.timeline], indent=2, ensure_ascii=False), encoding="utf-8")
     print(describe(clips, segments))
@@ -66,7 +71,7 @@ def cmd_build(args) -> int:
     project = load_project(args.projekt)
     if args.workers:
         project.data["video"]["workers"] = args.workers
-    mix, analysis, clips, segments, state = _prepare(project, args.projekt)
+    mix, analysis, clips, segments, state = _prepare(project, fresh_cut=args.neu_schneiden)
     fps = analysis.fps
     f0, f1 = 0, analysis.n_frames
     name = project["name"]
@@ -81,7 +86,8 @@ def cmd_build(args) -> int:
         desc = out_dir / f"{project['name']}_youtube_beschreibung.txt"
         write_description(project, mix.timeline, mix.duration, desc)
         print(f"YouTube-Kapitel/Tracklist: {desc}")
-    render_video(project, str(Path(args.projekt).resolve()), state, mix.path, out, f0, f1, default_workers(project))
+    render_video(project, str(Path(args.projekt).resolve()), state, mix.path, out, f0, f1, default_workers(project),
+                 use_cache=not args.vorschau)
     print(f"\nFERTIG: {out}")
     return 0
 
@@ -99,6 +105,77 @@ def cmd_info(args) -> int:
     for sc in project["scenes"]:
         n = len(list(project.scenes_dir.glob(f"{sc['id']}__v*.mp4"))) if project.scenes_dir.is_dir() else 0
         print(f"    {sc['id']:<22} {scene_mode(project, sc):<9} {n} Clip(s) fertig")
+    return 0
+
+
+def _candidates(project, term: str | None):
+    import os
+
+    from .songs import audio_files, normalize, search_folders
+
+    try:
+        used = {os.path.normcase(str(s.path.resolve())) for s in project.songs()}
+    except ConfigError:
+        used = set()
+    files = [p for _, p in audio_files(search_folders(project), int(project.get("song_search_depth") or 3))]
+    if term:
+        files = [p for p in files if normalize(term) in normalize(p.stem)]
+    return files, used
+
+
+def cmd_songs(args) -> int:
+    import os
+
+    project = load_project(args.projekt)
+    files, used = _candidates(project, " ".join(args.suche) if args.suche else None)
+    if not files:
+        print("Keine Audiodateien gefunden. Ordner unter \"song_search\" in projekt.json prüfen.")
+        return 1
+    for i, path in enumerate(files, 1):
+        mark = "  [in Playlist]" if os.path.normcase(str(path.resolve())) in used else ""
+        print(f"{i:4d}  {path.name:<55} {path.parent}{mark}")
+    return 0
+
+
+def cmd_add_song(args) -> int:
+    import os
+
+    from .songs import append_to_config, find_song
+
+    config_path = Path(args.projekt).resolve()
+    project = load_project(config_path)
+    chosen: list[Path] = []
+    if args.suche:
+        for term in args.suche:
+            path, others = find_song(project, term)
+            if not path:
+                print(f"Nicht gefunden: {term}")
+                continue
+            print(f"Gefunden: {path}")
+            for other in others:
+                print(f"    (weitere Treffer: {other})")
+            chosen.append(path)
+    else:
+        files, used = _candidates(project, None)
+        files = [p for p in files if os.path.normcase(str(p.resolve())) not in used]
+        if not files:
+            print("Keine weiteren Songs in den Suchordnern gefunden.")
+            return 1
+        for i, path in enumerate(files, 1):
+            print(f"{i:4d}  {path.name:<55} {path.parent}")
+        answer = input("\nNummer(n) der Songs zum Anhängen (z. B. 3 oder 3,5,7), Enter = abbrechen: ").strip()
+        for part in answer.replace(";", ",").split(","):
+            if part.strip().isdigit() and 1 <= int(part) <= len(files):
+                chosen.append(files[int(part) - 1])
+    if not chosen:
+        print("Nichts angehängt.")
+        return 1
+    added = append_to_config(config_path, project, chosen)
+    songs = load_project(config_path).songs()
+    print(f"\n{added} Song(s) angehängt. Playlist jetzt ({len(songs)}):")
+    for i, s in enumerate(songs, 1):
+        print(f"  {i:2d}. {s.display}")
+    print("\nJetzt '3_video_bauen.bat' starten – die schon gerenderten Teile werden wiederverwendet.")
     return 0
 
 
@@ -133,11 +210,23 @@ def main(argv=None) -> int:
     p.add_argument("--vorschau", type=float, metavar="SEKUNDEN", help="nur einen kurzen Ausschnitt rendern")
     p.add_argument("--ab", metavar="MM:SS", help="Startzeit der Vorschau")
     p.add_argument("--workers", type=int, help="parallele Render-Prozesse")
+    p.add_argument("--neu-schneiden", action="store_true",
+                   help="Schnitt komplett neu planen (sonst bleibt der Anfang wie beim letzten Mal)")
     p.set_defaults(func=cmd_build)
 
     p = sub.add_parser("info", help="Songs, Szenen und fertige Clips anzeigen")
     p.add_argument("projekt", nargs="?", default="projekt.json")
     p.set_defaults(func=cmd_info)
+
+    p = sub.add_parser("lieder", aliases=["songs"], help="Songs in den Suchordnern auflisten")
+    p.add_argument("projekt", nargs="?", default="projekt.json")
+    p.add_argument("--suche", nargs="+", help="nur Dateien mit diesem Namen")
+    p.set_defaults(func=cmd_songs)
+
+    p = sub.add_parser("song-dazu", aliases=["add-song"], help="Songs hinten an die Playlist anhängen")
+    p.add_argument("projekt", nargs="?", default="projekt.json")
+    p.add_argument("--suche", nargs="+", help="Songnamen (sonst Auswahlliste)")
+    p.set_defaults(func=cmd_add_song)
 
     p = sub.add_parser("demo", help="Test-Projekt mit künstlicher Musik und Test-Clips anlegen")
     p.add_argument("ordner", nargs="?", default="demo")

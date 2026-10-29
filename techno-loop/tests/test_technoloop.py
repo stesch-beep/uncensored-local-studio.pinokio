@@ -46,6 +46,14 @@ class Basics(unittest.TestCase):
         self.assertEqual(parse_song_name(Path("03 - Amelie Lens - Feel It.mp3")), ("Feel It", "Amelie Lens"))
         self.assertEqual(parse_song_name(Path("Only Title.wav")), ("Only Title", ""))
         self.assertEqual(parse_song_name(Path("12_Artist - A - B.flac")), ("A - B", "Artist"))
+        self.assertEqual(parse_song_name(Path("Ice Storm (1).wav")), ("Ice Storm", ""))
+
+    def test_normalize_for_search(self):
+        from technoloop.songs import normalize
+
+        self.assertEqual(normalize("Symphonie und Odyssee"), normalize("symphonie_und_odyssee"))
+        self.assertEqual(normalize("Für Elise"), "fuerelise")
+        self.assertIn(normalize("feuer und eis"), normalize("02 - Feuer und Eis (Remix)"))
 
 
 class FakeMaestro(BaseHTTPRequestHandler):
@@ -215,12 +223,28 @@ class AnalysisTest(unittest.TestCase):
         for bpm in (122.0, 128.0, 140.0):
             x = _synthetic_beats(bpm, 60)
             env = audio.band_envelope(x, audio.ANALYSIS_SR, 35, 130)
-            period, phase, found = audio._comb_beats(audio.onset_envelope(env), audio.ANALYSIS_SR / audio.ENV_HOP)
+            period, phase, found, _conf = audio._comb_beats(audio.onset_envelope(env), audio.ANALYSIS_SR / audio.ENV_HOP)
             self.assertAlmostEqual(found, bpm, delta=0.15)
             rate = audio.ANALYSIS_SR / audio.ENV_HOP
             first = phase / rate
             d = (first - 0.25) % (60 / bpm)
             self.assertLess(min(d, 60 / bpm - d), 0.03)
+
+
+    def test_free_tempo_falls_back_to_onsets(self):
+        sr, rate = audio.ANALYSIS_SR, audio.ANALYSIS_SR / audio.ENV_HOP
+        rng = np.random.default_rng(1)
+        n = int(60 * sr)
+        x = np.zeros(n)
+        for _ in range(120):  # notes at random times: no steady beat
+            p = int(rng.integers(0, n - sr))
+            k = np.arange(sr) / sr
+            x[p:p + sr] += np.sin(2 * np.pi * rng.uniform(40, 200) * k) * np.exp(-k * rng.uniform(2, 8))
+        onset = audio.onset_envelope(audio.band_envelope(x.astype(np.float32), sr, 35, 130))
+        self.assertLess(audio._comb_beats(onset, rate)[3], 1.8)
+        peaks = audio._onset_peaks(onset, rate)
+        self.assertGreater(len(peaks), 20)
+        self.assertGreaterEqual(np.diff(peaks).min() / rate, 0.39)
 
 
 @unittest.skipUnless(HAVE_FFMPEG, "ffmpeg missing")
@@ -256,6 +280,61 @@ class BuildTest(unittest.TestCase):
             self.assertEqual((info["width"], info["height"]), (640, 360))
             self.assertAlmostEqual(info["duration"], 6.0, delta=0.15)
             self.assertTrue(info.get("has_audio"))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+@unittest.skipUnless(HAVE_FFMPEG, "ffmpeg missing")
+class AppendTest(unittest.TestCase):
+    """Find songs by name, append one, rebuild: the start must be reused, not re-rendered."""
+
+    def test_append_song_reuses_rendered_start(self):
+        from technoloop import cli, songs
+
+        tmp = Path(tempfile.mkdtemp())
+        try:
+            demo.make_demo(tmp / "d")
+            (tmp / "Downloads" / "suno").mkdir(parents=True)
+            (tmp / "F").mkdir()
+            music = sorted((tmp / "d" / "musik").glob("*.wav"))
+            shutil.copy(music[0], tmp / "F" / "Symphonie und Odyssee.wav")
+            shutil.copy(music[1], tmp / "Downloads" / "suno" / "Feuer und Eis.wav")
+            shutil.copy(music[2], tmp / "Downloads" / "suno" / "Ice Storm (1).wav")
+            cfg = {
+                "name": "grow", "clips_folder": "d/clips",
+                "song_search": ["Downloads", "Downloads/suno", "F"],
+                "songs": [{"find": "symphonie und odyssee"}, {"find": "Feuer und Eis"}],
+                "audio": {"crossfade_seconds": 4},
+                "video": {"width": 320, "height": 180, "workers": 1, "encoder": "libx264", "chunk_seconds": 15},
+            }
+            config = tmp / "projekt.json"
+            config.write_text(json.dumps(cfg))
+            self.assertEqual(cli.main(["bauen", str(config)]), 0)
+            parts_dir = tmp / "arbeitsordner" / "render" / "teile"
+            first = {p.name: p.stat().st_mtime_ns for p in parts_dir.glob("*.mp4")}
+            edl1 = json.loads((tmp / "arbeitsordner" / "render" / "edl.json").read_text())
+
+            project = load_project(config)
+            path, _ = songs.find_song(project, "ice storm")
+            self.assertEqual(path.name, "Ice Storm (1).wav")
+            self.assertEqual(songs.append_to_config(config, project, [path]), 1)
+            self.assertEqual([s.title for s in load_project(config).songs()],
+                             ["Symphonie und Odyssee", "Feuer und Eis", "Ice Storm"])
+
+            self.assertEqual(cli.main(["bauen", str(config)]), 0)
+            second = {p.name: p.stat().st_mtime_ns for p in parts_dir.glob("*.mp4")}
+            reused = [n for n in first if second.get(n) == first[n]]
+            self.assertGreaterEqual(len(reused), 2, "the unchanged start must not be rendered again")
+            self.assertGreater(len(second), len(first))
+            edl2 = json.loads((tmp / "arbeitsordner" / "render" / "edl.json").read_text())
+            n_same = 0
+            for a, b in zip(edl1["segments"], edl2["segments"]):
+                if a != b:
+                    break
+                n_same += 1
+            self.assertGreaterEqual(n_same, len(edl1["segments"]) // 2)
+            info = ff.probe(tmp / "ausgabe" / "grow.mp4")
+            self.assertAlmostEqual(info["duration"], 41 + 38 + 36 - 2 * 4, delta=0.5)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 

@@ -9,6 +9,7 @@ speed, direction, mirror, zoom/pan drift and colour look.
 from __future__ import annotations
 
 import bisect
+import hashlib
 import json
 import random
 from dataclasses import asdict, dataclass
@@ -110,9 +111,12 @@ def song_switch_times(timeline: list[TimelineEntry]) -> list[float]:
 
 
 def plan_edl(project: Project, clips: list[Clip], analysis: Analysis,
-             timeline: list[TimelineEntry]) -> list[Segment]:
+             timeline: list[TimelineEntry], prefix: list[Segment] | None = None) -> list[Segment]:
+    """Plan the cuts. `prefix` = segments kept from the previous build (see reusable_prefix)."""
     m = project["montage"]
-    rng = random.Random(project["seed"] * 7919 + 17)
+    prefix = list(prefix or [])
+    start_t = prefix[-1].t1 if prefix else 0.0
+    rng = random.Random(project["seed"] * 7919 + 17 + (int(round(start_t * 1000)) if prefix else 0))
     total = analysis.n_frames / analysis.fps
     beats = analysis.beats
     if len(beats) < 4:  # no usable rhythm (silence, spoken word…) -> 120 BPM grid
@@ -126,12 +130,15 @@ def plan_edl(project: Project, clips: list[Clip], analysis: Analysis,
     min_len = float(m["min_segment_seconds"])
     avoid = int(m["avoid_repeat"])
     last_used = {i: -1e9 for i in range(len(clips))}
-    history: list[int] = []
-    segments: list[Segment] = []
+    history: list[int] = [s.clip for s in prefix]
+    for s in prefix:
+        last_used[s.clip] = s.t0
+    segments: list[Segment] = prefix
 
-    t = 0.0
-    bi = 0
-    pending_flash = True
+    t = start_t
+    bi = bisect.bisect_left(beats, t + 1e-3)
+    # A kept prefix ends either anywhere or exactly on the first beat after a song change.
+    pending_flash = bool(prefix) and any(prefix[-1].t0 < sw <= t for sw in switches)
     while t < total - 0.05:
         level = float(levels[min(bi, len(levels) - 1)]) if len(levels) else 1.0
         choices = m["cut_beats_high"] if level >= 0.85 else m["cut_beats_low"]
@@ -239,8 +246,70 @@ def plan_edl(project: Project, clips: list[Clip], analysis: Analysis,
     return segments
 
 
-def save_edl(path: Path, clips: list[Clip], segments: list[Segment]) -> None:
+def plan_signature(project: Project) -> str:
+    """Settings that shape the cut. If they change, the whole plan is made anew."""
+    keys = {"montage": project["montage"], "seed": project["seed"], "fps": project["video"]["fps"]}
+    return hashlib.sha1(json.dumps(keys, sort_keys=True).encode()).hexdigest()[:16]
+
+
+def _same_song(a: TimelineEntry, b: TimelineEntry) -> bool:
+    return (a.path == b.path and abs(a.start - b.start) < 1e-3 and abs(a.end - b.end) < 1e-3
+            and abs(a.gain_db - b.gain_db) < 1e-3)
+
+
+def reusable_prefix(path: Path, project: Project, clips: list[Clip], timeline: list[TimelineEntry],
+                    crossfade: float, end_fade: float) -> list[Segment]:
+    """Segments of the previous build that are still valid.
+
+    Everything before the first song that changed (or before the crossfade into a
+    newly appended song) is kept as it was, so the start of the video stays
+    identical and its rendered parts can be reused. New clips only show up after
+    that point.
+    """
+    if not path.is_file():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if data.get("signature") != plan_signature(project) or not data.get("timeline"):
+        return []
+    old_tl = [TimelineEntry(**e) for e in data["timeline"]]
+    if len(old_tl) == len(timeline) and all(_same_song(a, b) for a, b in zip(old_tl, timeline)) \
+            and abs(data.get("crossfade", 0) - crossfade) < 1e-6 and abs(data.get("end_fade", 0) - end_fade) < 1e-6:
+        stable = float("inf")
+    else:
+        margin = max(data.get("crossfade", 0), data.get("end_fade", 0), crossfade, end_fade)
+        stable = 0.0
+        for k, (a, b) in enumerate(zip(old_tl, timeline)):
+            if not _same_song(a, b):
+                stable = min(a.start, b.start) if k else 0.0
+                break
+            if k == len(old_tl) - 1 or k == len(timeline) - 1:
+                # The song that used to end the video (end fade) or now ends it.
+                stable = min(a.end, b.end) - margin
+                break
+    by_path = {c.path: i for i, c in enumerate(clips)}
+    old_clips = data["clips"]
+    kept: list[Segment] = []
+    for raw in data["segments"]:
+        seg = Segment(**{**raw, "pan0": tuple(raw["pan0"]), "pan1": tuple(raw["pan1"])})
+        old_clip = old_clips[seg.clip]
+        new_index = by_path.get(old_clip["path"])
+        if seg.t1 > stable - 0.5 or new_index is None or clips[new_index].frames != old_clip["frames"]:
+            break
+        seg.clip = new_index
+        kept.append(seg)
+    return kept
+
+
+def save_edl(path: Path, clips: list[Clip], segments: list[Segment], project: Project | None = None,
+             timeline: list[TimelineEntry] | None = None, crossfade: float = 0.0, end_fade: float = 0.0) -> None:
     path.write_text(json.dumps({
+        "signature": plan_signature(project) if project else "",
+        "timeline": [asdict(e) for e in timeline or []],
+        "crossfade": crossfade,
+        "end_fade": end_fade,
         "clips": [asdict(c) for c in clips],
         "segments": [asdict(s) for s in segments],
     }, indent=1), encoding="utf-8")

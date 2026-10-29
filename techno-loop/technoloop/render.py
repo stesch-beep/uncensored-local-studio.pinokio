@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import bisect
+import hashlib
 import json
 import multiprocessing as mp
 import os
@@ -186,8 +187,9 @@ def render_chunk(job: dict) -> str:
     project, analysis, clips, segments, timeline = _load_state(job["config"], job["state"])
     renderer = FrameRenderer(project, analysis, clips, segments, timeline)
     v = project["video"]
-    out = Path(job["out"])
-    log = open(out.with_suffix(".log"), "wb")
+    final = Path(job["out"])
+    out = final.with_name(final.stem + ".tmp.mp4")
+    log = open(final.with_suffix(".log"), "wb")
     args = [ff.ffmpeg(), "-hide_banner", "-y", "-loglevel", "warning",
             "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{renderer.W}x{renderer.H}", "-r", str(v["fps"]),
             "-i", "-", *ff.encoder_args(job["encoder"], int(v["quality"]), int(v["fps"])),
@@ -226,61 +228,129 @@ def render_chunk(job: dict) -> str:
         proc.wait()
         log.close()
     if proc.returncode != 0 or error:
-        tail = out.with_suffix(".log").read_text(encoding="utf-8", errors="replace")[-1500:]
+        tail = final.with_suffix(".log").read_text(encoding="utf-8", errors="replace")[-1500:]
+        out.unlink(missing_ok=True)
         raise ff.FFmpegError(f"Encoder-Fehler in Teil {job['index']}:\n{tail}")
+    out.replace(final)
+    final.with_suffix(".log").unlink(missing_ok=True)
     if _progress is not None:
         _progress[job["index"]] = job["f1"] - job["f0"]
-    return str(out)
+    return str(final)
 
 
-def _split(segments: list[Segment], fps: float, f0: int, f1: int, parts: int) -> list[tuple[int, int]]:
-    """Chunk boundaries on segment cuts (so every chunk starts at a fresh shot)."""
+CHUNK_VERSION = 1
+
+
+def _chunk_grid(segments: list[Segment], fps: float, f0: int, f1: int, chunk_s: float) -> list[tuple[int, int]]:
+    """Chunks of about `chunk_s` seconds, each starting on a cut.
+
+    Boundaries are taken from a fixed time grid (first cut after every multiple
+    of chunk_s), so they stay the same when songs are appended -> cache hits.
+    """
     cuts = sorted({int(round(s.t0 * fps)) for s in segments if f0 < round(s.t0 * fps) < f1})
+    step = max(1.0, chunk_s) * fps
     bounds = [f0]
-    for k in range(1, parts):
-        target = f0 + (f1 - f0) * k / parts
-        if cuts:
-            best = min(cuts, key=lambda c: abs(c - target))
-            if best > bounds[-1] + fps:
-                bounds.append(best)
+    k = int(f0 // step) + 1
+    while True:
+        i = bisect.bisect_left(cuts, k * step)
+        if i >= len(cuts) or cuts[i] >= f1 - fps:
+            break
+        if cuts[i] > bounds[-1]:
+            bounds.append(cuts[i])
+        while k * step <= cuts[i]:
+            k += 1
     bounds.append(f1)
     return list(zip(bounds[:-1], bounds[1:]))
 
 
+def _file_id(path: str) -> list:
+    try:
+        st = os.stat(path)
+        return [path, st.st_size, st.st_mtime_ns]
+    except OSError:
+        return [path, 0, 0]
+
+
+def _chunk_key(project: Project, encoder: str, clips: list[Clip], segments: list[Segment],
+               analysis: Analysis, timeline: list[TimelineEntry], a: int, b: int) -> str:
+    """Everything that influences the pixels of frames [a, b)."""
+    from . import __version__
+    from dataclasses import asdict
+
+    fps = analysis.fps
+    t0, t1 = a / fps - 1.0, b / fps
+    h = hashlib.sha1()
+    cfg = {k: project[k] for k in ("video", "montage", "speakers", "titles", "seed")}
+    cfg["video"] = {k: v for k, v in cfg["video"].items() if k not in ("workers", "clip_cache", "chunk_seconds")}
+    cfg["crossfade"] = project["audio"]["crossfade_seconds"]
+    extra = [_file_id(str(project.path(project["speakers"].get("image"))))] if project["speakers"].get("image") else []
+    h.update(json.dumps([CHUNK_VERSION, __version__, encoder, cfg, extra, a, b], sort_keys=True, default=str).encode())
+    for seg in segments:
+        if seg.t1 > t0 and seg.t0 < t1:
+            d = asdict(seg)
+            clip = clips[seg.clip]
+            d["clip"] = _file_id(clip.path) + [clip.frames, clip.loop]
+            h.update(json.dumps(d, sort_keys=True).encode())
+    for arr in (analysis.cone, analysis.tweeter, analysis.kick):
+        h.update(np.ascontiguousarray(arr[a:b]).tobytes())
+    show_total = project["titles"].get("show_total", False)
+    for e in timeline:
+        if e.end > t0 - 15 and e.start < t1 + 15:
+            h.update(json.dumps([e.number, e.title, e.artist, round(e.start, 4), round(e.end, 4),
+                                 e.count if show_total else 0]).encode())
+    return h.hexdigest()[:20]
+
+
 def render_video(project: Project, config_path: str, state_dir: Path, mix_path: Path,
-                 out_path: Path, f0: int, f1: int, workers: int) -> Path:
+                 out_path: Path, f0: int, f1: int, workers: int, *, use_cache: bool = True) -> Path:
+    """Render frames [f0, f1) and mux the audio.
+
+    Full builds keep every rendered chunk in arbeitsordner/render/teile; a later
+    build only renders chunks whose content changed (e.g. after appending songs).
+    """
     v = project["video"]
     fps = float(v["fps"])
     encoder = ff.pick_encoder(v.get("codec", "h264"), v.get("encoder", "auto"))
-    _, segments = load_edl(state_dir / "edl.json")
-    chunks = _split(segments, fps, f0, f1, max(1, workers) * (2 if workers > 1 else 1))
-    chunk_dir = state_dir / "chunks"
-    chunk_dir.mkdir(exist_ok=True)
-    for old in chunk_dir.glob("teil_*"):
-        old.unlink()
-    jobs = [{
-        "config": config_path, "state": str(state_dir), "index": i, "f0": a, "f1": b,
-        "encoder": encoder, "out": str(chunk_dir / f"teil_{i:03d}.mp4"),
-    } for i, (a, b) in enumerate(chunks)]
-    total = f1 - f0
-    print(f"Rendere {total} Frames ({total / fps / 60:.1f} min) in {len(jobs)} Teilen mit {workers} Prozess(en), "
-          f"Encoder {encoder} …")
-    started = time.time()
-    ctx = mp.get_context("spawn")
-    progress = ctx.Array("i", len(jobs), lock=False)
-    with ctx.Pool(processes=max(1, workers), initializer=_init_worker, initargs=(progress,)) as pool:
-        result = pool.map_async(render_chunk, jobs, chunksize=1)
-        while not result.ready():
-            result.wait(2.0)
-            done = sum(progress)
-            el = time.time() - started
-            speed = done / el if el > 0 else 0
-            eta = (total - done) / speed if speed > 0 else 0
-            print(f"\r  {100 * done / total:5.1f}%  {speed:5.1f} fps  noch ~{eta / 60:4.1f} min   ", end="", flush=True)
-        parts = result.get()
-    print(f"\r  100.0%  fertig in {(time.time() - started) / 60:.1f} min" + " " * 30)
+    _, analysis, clips, segments, timeline = _load_state(config_path, str(state_dir))
+    chunks = _chunk_grid(segments, fps, f0, f1, float(v.get("chunk_seconds") or 120))
+    part_dir = state_dir / ("teile" if use_cache else "vorschau_teile")
+    part_dir.mkdir(exist_ok=True)
+    if not use_cache:
+        for old in part_dir.glob("*"):
+            old.unlink()
+    jobs, parts = [], []
+    for i, (a, b) in enumerate(chunks):
+        key = _chunk_key(project, encoder, clips, segments, analysis, timeline, a, b)
+        out = part_dir / f"{a:08d}_{key}.mp4"
+        parts.append(str(out))
+        if not out.is_file():
+            jobs.append({"config": config_path, "state": str(state_dir), "index": len(jobs),
+                         "f0": a, "f1": b, "encoder": encoder, "out": str(out)})
+    reused = len(chunks) - len(jobs)
+    total = sum(j["f1"] - j["f0"] for j in jobs)
+    if reused:
+        print(f"{reused} von {len(chunks)} Teilen sind schon fertig und werden wiederverwendet.")
+    if jobs:
+        print(f"Rendere {total} Frames ({total / fps / 60:.1f} min) in {len(jobs)} Teilen mit "
+              f"{min(workers, len(jobs))} Prozess(en), Encoder {encoder} …")
+        started = time.time()
+        ctx = mp.get_context("spawn")
+        progress = ctx.Array("i", len(jobs), lock=False)
+        with ctx.Pool(processes=max(1, min(workers, len(jobs))), initializer=_init_worker,
+                      initargs=(progress,)) as pool:
+            result = pool.map_async(render_chunk, jobs, chunksize=1)
+            while not result.ready():
+                result.wait(2.0)
+                done = sum(progress)
+                el = time.time() - started
+                speed = done / el if el > 0 else 0
+                eta = (total - done) / speed if speed > 0 else 0
+                print(f"\r  {100 * done / total:5.1f}%  {speed:5.1f} fps  noch ~{eta / 60:4.1f} min   ",
+                      end="", flush=True)
+            result.get()
+        print(f"\r  100.0%  fertig in {(time.time() - started) / 60:.1f} min" + " " * 30)
 
-    list_file = chunk_dir / "liste.txt"
+    list_file = part_dir / "liste.txt"
     quote = lambda p: Path(p).as_posix().replace("'", "'\\''")
     list_file.write_text("".join(f"file '{quote(p)}'\n" for p in parts), encoding="utf-8")
     acfg = project["audio"]
@@ -294,9 +364,10 @@ def render_video(project: Project, config_path: str, state_dir: Path, mix_path: 
         "-c:a", "aac", "-b:a", str(acfg["bitrate"]), "-ar", str(acfg["sample_rate"]),
         "-shortest", "-movflags", "+faststart", str(out_path),
     ])
-    for p in parts:
-        Path(p).unlink(missing_ok=True)
-        Path(p).with_suffix(".log").unlink(missing_ok=True)
+    keep = {Path(p).name for p in parts}
+    for old in part_dir.glob("*.mp4"):
+        if old.name not in keep or not use_cache:
+            old.unlink(missing_ok=True)
     return out_path
 
 

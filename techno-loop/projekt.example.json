@@ -97,11 +97,23 @@
     }
   ],
 
-  "songs_folder": "musik",
-  "songs": [],
+  "_hinweis_songs": "Songs in Abspiel-Reihenfolge. {\"find\": \"Name\"} sucht die Datei in den song_search-Ordnern. Weitere Songs mit 4_song_anhaengen.bat hinten anbauen.",
+  "song_search": [
+    "musik",
+    "~/Downloads",
+    "~/Downloads/suno",
+    "C:/Download",
+    "C:/Download/suno",
+    "F:/Pinokio Projekt Fire und ice"
+  ],
+  "default_artist": "",
+  "songs": [
+    {"find": "Symphonie und Odyssee"}
+  ],
 
   "audio": {
-    "duration_minutes": 60,
+    "_hinweis": "duration_minutes 0 = Videolänge ergibt sich aus den Songs (wächst beim Anbauen mit).",
+    "duration_minutes": 0,
     "crossfade_seconds": 6,
     "target_lufs": -14,
     "shuffle": false

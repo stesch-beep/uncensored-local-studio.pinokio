@@ -23,7 +23,7 @@ from .config import Project, Song
 
 ANALYSIS_SR = 22050
 ENV_HOP = 105  # 210 envelope samples per second
-ANALYSIS_VERSION = 4
+ANALYSIS_VERSION = 5
 
 
 # ── playlist & mix ──────────────────────────────────────────────────────────
@@ -50,6 +50,8 @@ class MixResult:
     path: Path
     duration: float
     timeline: list[TimelineEntry] = field(default_factory=list)
+    crossfade: float = 0.0
+    end_fade: float = 0.0
 
 
 def _song_stats(song: Song, cache_dir: Path) -> dict:
@@ -183,7 +185,7 @@ def build_mix(project: Project) -> MixResult:
     (cache / "timeline.json").write_text(
         json.dumps([e.__dict__ for e in timeline], indent=2, ensure_ascii=False), encoding="utf-8",
     )
-    return MixResult(mix_path, duration, timeline)
+    return MixResult(mix_path, duration, timeline, xf, float(acfg["end_fade_seconds"]))
 
 
 # ── analysis ────────────────────────────────────────────────────────────────
@@ -272,13 +274,17 @@ def onset_envelope(bass_env: np.ndarray) -> np.ndarray:
     return np.convolve(onset, np.hanning(5) / np.hanning(5).sum(), mode="same")
 
 
-def _comb_beats(onset: np.ndarray, rate: float, bpm_lo=100.0, bpm_hi=180.0) -> tuple[float, float, float]:
-    """Fixed-tempo beat grid: returns (period_samples, phase_samples, bpm)."""
+def _comb_beats(onset: np.ndarray, rate: float, bpm_lo=85.0, bpm_hi=185.0) -> tuple[float, float, float, float]:
+    """Fixed-tempo beat grid: (period_samples, phase_samples, bpm, confidence).
+
+    confidence = mean onset strength on the grid / mean onset strength overall;
+    a steady kick gives values far above 2, free-tempo music stays close to 1.
+    """
     o = onset - onset.mean()
     n = len(o)
     if n < rate * 8:
         bpm = 128.0
-        return 60 * rate / bpm, 0.0, bpm
+        return 60 * rate / bpm, 0.0, bpm, 0.0
     spec = np.fft.rfft(o, 2 * n)
     ac = np.fft.irfft(spec * np.conj(spec))[:n]
     bpms = np.arange(bpm_lo, bpm_hi, 0.25)
@@ -299,8 +305,24 @@ def _comb_beats(onset: np.ndarray, rate: float, bpm_lo=100.0, bpm_hi=180.0) -> t
         j = int(np.argmax(score))
         if score[j] > best[0]:
             best = (score[j], period, phases[j])
-    _, period, phase = best
-    return period, phase, 60 * rate / period
+    score, period, phase = best
+    return period, phase, 60 * rate / period, float(score / (onset.mean() + 1e-12))
+
+
+def _onset_peaks(onset: np.ndarray, rate: float, min_gap: float = 0.4) -> np.ndarray:
+    """Strong onsets (sample indices) for songs without a steady beat."""
+    w = max(1, int(min_gap * rate / 2))
+    padded = np.pad(onset, w, mode="edge")
+    windows = np.lib.stride_tricks.sliding_window_view(padded, 2 * w + 1)
+    local_max = windows.max(axis=1)
+    thresh = np.percentile(onset, 75)
+    peaks = np.nonzero((onset >= local_max) & (onset > thresh))[0]
+    keep, last = [], -10 ** 9
+    for k in peaks:
+        if k - last >= 2 * w:
+            keep.append(k)
+            last = k
+    return np.array(keep, dtype=np.float64)
 
 
 def analyze(project: Project, mix: MixResult) -> Analysis:
@@ -325,44 +347,66 @@ def analyze(project: Project, mix: MixResult) -> Analysis:
     tweet = np.zeros(n_env, dtype=np.float64)
     beats, bars, phrases, levels, bpms = [], [], [], [], []
     timeline = mix.timeline
+    # Statistics only use the inside of each song (no crossfades, no end fade), so a
+    # song analyses exactly the same whatever comes before or after it -> appending
+    # songs later leaves the earlier part of the video unchanged.
+    margin = max(mix.crossfade, mix.end_fade, 0.0)
     for i, entry in enumerate(timeline):
         own_a = entry.start + (0.5 * (timeline[i - 1].end - entry.start) if i > 0 else 0.0)
         own_b = entry.end - (0.5 * (entry.end - timeline[i + 1].start) if i + 1 < len(timeline) else 0.0)
         a, b = int(own_a * rate), min(n_env, int(own_b * rate))
         if b - a < rate:
             continue
+        sa, sb = int(entry.start * rate), min(n_env, int(entry.end * rate))
+        ia, ib = int((entry.start + margin) * rate), min(n_env, int((entry.end - margin) * rate))
+        if ib - ia < 10 * rate:
+            ia, ib = sa, sb
         # Per-song normalisation so quiet and loud tracks both move the cones.
-        seg = bass[a:b].astype(np.float64)
-        ref = np.percentile(seg, 98) + 1e-9
-        v = np.clip(seg / ref, 0, 1.25) ** 1.6
+        ref = np.percentile(bass[ia:ib], 98) + 1e-9
+        v = np.clip(bass[a:b].astype(np.float64) / ref, 0, 1.25) ** 1.6
         gate = 0.22
         drive[a:b] = np.clip((v - gate) / (1 - gate), 0, None)
-        hs = highs[a:b].astype(np.float64)
-        tweet[a:b] = np.clip(hs / (np.percentile(hs, 97) + 1e-9), 0, 1.2) ** 1.3
+        href = np.percentile(highs[ia:ib], 97) + 1e-9
+        tweet[a:b] = np.clip(highs[a:b].astype(np.float64) / href, 0, 1.2) ** 1.3
 
-        # Beat grid from the kick onsets of the song (analyse the whole song, keep the owned part).
-        sa, sb = int(entry.start * rate), min(n_env, int(entry.end * rate))
-        period, phase, bpm = _comb_beats(onset_envelope(bass[sa:sb]), rate)
-        bpms.append(round(float(bpm), 2))
-        times = entry.start + (phase + np.arange(0, (sb - sa - phase) / period) * period) / rate
-        # Phrase offset: beat where the energy changes most often (drops / breakdowns).
-        fidx = np.clip(((times - entry.start) * rate).astype(int) + sa, 0, n_env - 1)
+        period, phase, bpm, confidence = _comb_beats(onset_envelope(bass[ia:ib]), rate)
+        if confidence >= 1.8:
+            p_s = period / rate
+            t_first = (ia + phase) / rate
+            k0 = int(np.ceil((entry.start - t_first) / p_s))
+            k1 = int(np.floor((entry.end - t_first) / p_s))
+            times = t_first + np.arange(k0, k1 + 1) * p_s
+            bpms.append(round(float(bpm), 2))
+            steady = True
+        else:
+            # No steady kick (orchestral, ambient, free tempo): cut on strong onsets instead.
+            peaks = _onset_peaks(onset_envelope(full[sa:sb]), rate)
+            times = entry.start + peaks / rate
+            bpms.append(0.0)
+            steady = False
+        if len(times) == 0:
+            continue
+        fidx = np.clip((times * rate).astype(int), 0, n_env - 1)
         energy = full[fidx].astype(np.float64)
-        if len(energy) >= 48:
+        inside = (times >= entry.start + margin) & (times < entry.end - margin)
+        if inside.sum() < 16:
+            inside = np.ones(len(times), bool)
+        # Phrase offset: beat where the energy changes most often (drops / breakdowns).
+        offset = 0
+        if steady and inside.sum() >= 48:
             sm = _smooth(energy, 4)
             nov = np.zeros_like(sm)
             for kk in range(8, len(sm) - 8):
-                nov[kk] = abs(sm[kk:kk + 8].mean() - sm[kk - 8:kk].mean())
+                if inside[kk]:
+                    nov[kk] = abs(sm[kk:kk + 8].mean() - sm[kk - 8:kk].mean())
             offset = int(np.argmax([nov[m::16].sum() for m in range(16)]))
-        else:
-            offset = 0
         smooth = _smooth(energy, 16)
-        level = smooth / (np.median(smooth) + 1e-9)
+        level = smooth / (np.median(smooth[inside]) + 1e-9)
         rel = np.arange(len(times)) - offset
         keep = (times >= own_a) & (times < own_b)
         beats.append(times[keep])
-        bars.append((rel % 4 == 0)[keep])
-        phrases.append((rel % 16 == 0)[keep])
+        bars.append(((rel % 4 == 0) if steady else np.ones(len(times), bool))[keep])
+        phrases.append(((rel % 16 == 0) if steady else np.zeros(len(times), bool))[keep])
         levels.append(level[keep])
 
     # Damped spring = speaker cone. Semi-implicit Euler at the envelope rate.
@@ -390,5 +434,5 @@ def analyze(project: Project, mix: MixResult) -> Analysis:
         beat_phrase=concat(phrases, bool), beat_level=concat(levels, np.float32), bpm=bpms,
     )
     result.save(cache_file)
-    print("  Tempi: " + ", ".join(f"{b:.0f}" for b in bpms) + " BPM")
+    print("  Tempi: " + ", ".join(f"{b:.0f}" if b else "frei" for b in bpms) + " BPM")
     return result
