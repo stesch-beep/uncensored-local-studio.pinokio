@@ -16,17 +16,20 @@ DEFAULTS = {
     "seed": 1234,
     "maestro": {
         "url": "auto",
-        # H3 First / Last (Pruned 20B). With start = end image the clip loops seamlessly.
-        "model": "minimax_h3",
-        # H3 Omni Reference (Pruned 20B) for scenes that only use identity images.
-        "omni_model": "minimax_h3_ref2va",
+        # H3 Fused 4-Step – Frames (Turbo eingebaut, 4 Schritte). Start = Endbild -> nahtloser Loop.
+        "model": "minimax_h3_fused_turbo",
+        # H3 Fused 4-Step – References, für Szenen nur mit Identitätsbildern.
+        "omni_model": "minimax_h3_ref2va_fused_turbo",
+        # Ältere Maestro-Versionen ohne Fused-Modell: normales H3 + Turbo-LoRA.
+        "fallback_model": "minimax_h3",
+        "fallback_omni_model": "minimax_h3_ref2va",
         # Name of a preset saved in Maestro (e.g. "H3 Steps4"). If found, its
         # steps/LoRAs/params win over the values below.
         "preset": "H3 Steps4",
         "resolution": "1280x704",
         "frames": 175,
         "steps": 4,
-        "turbo": True,
+        "turbo": "auto",  # auto = Turbo-LoRA nur bei Modellen ohne eingebauten Turbo
         "turbo_lora": "minimax_h3_turbo_4step_ckpt500.safetensors",
         "turbo_strength": 0.7,
         "variants": 2,
@@ -38,7 +41,8 @@ DEFAULTS = {
     "keyframes": {
         # Standbilder der Girls pro Szene (werden in H3 erster = letzter Frame -> nahtloser Loop).
         "engine": "maestro",            # maestro | comfyui
-        "model": "krea2_turbo_edit",     # Maestro: Krea 2 Turbo Identity Edit (2 Referenzbilder)
+        "model": "qwen_image_21_7B",     # Maestro: Qwen Image 2.1 (bis 10 Referenzbilder); Turbo: qwen_image_21_7B_turbo
+        "fallback_model": "krea2_turbo_edit",  # ältere Maestro-Versionen: Krea 2 Turbo Identity Edit
         "resolution": "1280x720",
         "steps": 0,                      # 0 = Standard des Modells
         "folder": "bilder/keyframes",

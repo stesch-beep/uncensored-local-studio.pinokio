@@ -1,7 +1,7 @@
 """Scene keyframes with the two girls, generated from their reference photos.
 
-Default engine: Maestro's "Krea 2 Turbo Identity Edit" (up to two reference
-images, identity preserving). Alternative: any ComfyUI workflow exported in
+Default engine: Maestro's "Qwen Image 2.1" (up to ten reference images;
+older Maestro versions fall back to "Krea 2 Turbo Identity Edit"). Alternative: any ComfyUI workflow exported in
 API format with placeholders ({{PROMPT}}, {{IMAGE1}}, {{IMAGE2}}, {{SEED}},
 {{WIDTH}}, {{HEIGHT}}).
 
@@ -29,10 +29,10 @@ def keyframe_prompt(project: Project, scene: dict) -> str:
     cast = _cast(project, scene)
     looks = [g.get("look") or g.get("description") or "" for g in cast]
     if len(cast) >= 2:
-        who = (f"The woman from the first reference image stands on the left ({looks[0]}), "
-               f"the woman from the second reference image on the right ({looks[1]}).")
+        who = (f"The woman from image 1 (the first reference image) stands on the left ({looks[0]}), "
+               f"the woman from image 2 (the second reference image) on the right ({looks[1]}).")
     else:
-        who = f"The woman from the reference image ({looks[0]})."
+        who = f"The woman from image 1 (the reference image) ({looks[0]})."
     action = scene.get("action", "").strip()
     return (
         f"{who} {action} {project['style'].strip().rstrip('.')}. "
@@ -250,13 +250,22 @@ def make_keyframes(project: Project, *, only=None, force=False, dry_run=False, u
         client = ComfyClient(kcfg["comfyui_url"])
     else:
         client = connect(url or project["maestro"]["url"])
-        try:
-            defaults = client.get_json(f"/api/v1/defaults/{urllib.parse.quote(kcfg['model'])}")
-        except MaestroError as error:
+        defaults = None
+        for model in [kcfg["model"]] + ([kcfg["fallback_model"]] if kcfg.get("fallback_model") else []):
+            try:
+                defaults = client.get_json(f"/api/v1/defaults/{urllib.parse.quote(model)}")
+            except MaestroError:
+                continue
+            if model != kcfg["model"]:
+                print(f"Bildmodell '{kcfg['model']}' gibt es in diesem Maestro nicht – nehme '{model}'.")
+                kcfg = dict(kcfg, model=model)
+                project.data["keyframes"] = kcfg
+            break
+        if defaults is None:
             raise MaestroError(
-                f"Bildmodell '{kcfg['model']}' ist in Maestro nicht verfügbar – in den Maestro-Einstellungen "
-                f"sichtbar schalten oder keyframes.model ändern ({error})."
-            ) from error
+                f"Bildmodell '{kcfg['model']}' ist in Maestro nicht verfügbar – Maestro aktualisieren, das Modell "
+                "in den Einstellungen sichtbar schalten oder keyframes.model ändern."
+            )
     failures = 0
     for index, (scene, target) in enumerate(todo, 1):
         images = _girl_images(project, scene)

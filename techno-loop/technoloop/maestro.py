@@ -213,22 +213,38 @@ def _find_preset(client: MaestroClient, name: str) -> dict | None:
     return None
 
 
-def _lora_settings(mcfg: dict, preset: dict | None) -> tuple[list[str], str, int]:
+def has_baked_turbo(model: str) -> bool:
+    """H3 Fused 4-Step / FastH3 / Singularity carry their accelerator inside the checkpoint;
+    Maestro rejects an extra Turbo LoRA for them."""
+    name = str(model).lower()
+    return any(tag in name for tag in ("fused", "fasth3", "singularity"))
+
+
+def _is_turbo_lora(name: str) -> bool:
+    return "turbo" in str(name).lower() and "h3" in str(name).lower()
+
+
+def _lora_settings(mcfg: dict, preset: dict | None, model: str) -> tuple[list[str], str, int]:
+    baked = has_baked_turbo(model)
     if preset:
         params = preset.get("params") or {}
         loras = list(preset.get("activated_loras") or params.get("activated_loras") or [])
         mult = preset.get("loras_multipliers") or params.get("loras_multipliers") or ""
         mult = " ".join(str(m) for m in mult) if isinstance(mult, list) else str(mult)
         steps = int(params.get("num_inference_steps") or mcfg["steps"])
-        if params.get("minimax_h3_turbo_mode") and not any("turbo" in str(l).lower() for l in loras):
+        tokens = mult.split()
+        tokens += ["1.00"] * (len(loras) - len(tokens))
+        if baked:
+            keep = [i for i, lora in enumerate(loras) if not _is_turbo_lora(lora)]
+            return [loras[i] for i in keep], " ".join(tokens[i] for i in keep), steps
+        if params.get("minimax_h3_turbo_mode") and not any(_is_turbo_lora(l) for l in loras):
             # Maestro's Turbo checkbox adds the LoRA at submit time but also forces 6 steps.
             # Add the LoRA explicitly instead, so the preset's own step count is kept.
-            tokens = mult.split()
-            tokens += ["1.00"] * (len(loras) - len(tokens))
             loras.append(mcfg["turbo_lora"])
-            mult = " ".join(tokens[: len(loras) - 1] + [f"{float(mcfg['turbo_strength']):.2f}"])
-        return loras, mult.strip(), steps
-    if mcfg.get("turbo", True):
+            tokens = tokens[: len(loras) - 1] + [f"{float(mcfg['turbo_strength']):.2f}"]
+        return loras, " ".join(tokens[: len(loras)]).strip(), steps
+    turbo = mcfg.get("turbo", "auto")
+    if turbo is True or (turbo == "auto" and not baked):
         return [mcfg["turbo_lora"]], f"{float(mcfg['turbo_strength']):.2f}", int(mcfg["steps"])
     return [], "", int(mcfg["steps"])
 
@@ -243,15 +259,17 @@ def assemble_request(
     seed: int,
     keyframe_path: str | None,
     references: list[dict] | None,
+    model: str | None = None,
 ) -> dict:
     mcfg = project["maestro"]
+    model = model or (mcfg["omni_model"] if mode == "omni" else mcfg["model"])
     loop = bool(scene.get("loop", True)) and mode == "keyframe"
     body = {k: v for k, v in (defaults or {}).items() if not isinstance(v, (bytes, bytearray))}
     if preset:
         body.update({k: v for k, v in (preset.get("params") or {}).items() if not k.startswith("image_")})
-    loras, multipliers, steps = _lora_settings(mcfg, preset)
+    loras, multipliers, steps = _lora_settings(mcfg, preset, model)
     body.update({
-        "model_type": mcfg["omni_model"] if mode == "omni" else mcfg["model"],
+        "model_type": model,
         "prompt": build_prompt(project, scene, mode, loop),
         "resolution": scene.get("resolution") or mcfg["resolution"],
         "video_length": snap_frames(scene.get("frames") or mcfg["frames"]),
@@ -344,23 +362,34 @@ def render_scenes(project: Project, *, only: list[str] | None = None, force: boo
     if preset:
         print(f"Maestro-Preset '{preset.get('name')}' gefunden – Schritte/LoRAs kommen aus dem Preset.")
     elif mcfg.get("preset") and not dry_run:
-        print(f"Preset '{mcfg['preset']}' nicht in Maestro gefunden – nutze H3 Turbo mit {mcfg['steps']} Schritten.")
+        print(f"Preset '{mcfg['preset']}' nicht in Maestro gefunden – nutze {mcfg['model']} mit {mcfg['steps']} Schritten.")
 
     defaults_cache: dict[str, dict] = {}
     uploads: dict[Path, str] = {}
 
-    def defaults_for(model: str) -> dict:
+    resolved: dict[str, str] = {}
+
+    def model_for(wanted: str, fallback: str) -> str:
+        """The configured model, or the fallback when this Maestro version does not have it."""
         if dry_run:
-            return {}
-        if model not in defaults_cache:
-            try:
-                defaults_cache[model] = client.get_json(f"/api/v1/defaults/{urllib.parse.quote(model)}")
-            except MaestroError as error:
+            return wanted
+        if wanted not in resolved:
+            for candidate in [wanted] + ([fallback] if fallback and fallback != wanted else []):
+                try:
+                    defaults_cache[candidate] = client.get_json(f"/api/v1/defaults/{urllib.parse.quote(candidate)}")
+                except MaestroError:
+                    continue
+                if candidate != wanted:
+                    print(f"  Modell '{wanted}' gibt es in diesem Maestro nicht – nehme '{candidate}'"
+                          + (" mit H3-Turbo-LoRA." if not has_baked_turbo(candidate) else "."))
+                resolved[wanted] = candidate
+                break
+            else:
                 raise MaestroError(
-                    f"Modell '{model}' ist in Maestro nicht verfügbar. Aktiviere 'MiniMax H3' in den Maestro-"
-                    f"Einstellungen (Model visibility) oder passe maestro.model an. ({error})"
-                ) from error
-        return defaults_cache[model]
+                    f"Modell '{wanted}' ist in Maestro nicht verfügbar. Maestro in Pinokio aktualisieren oder "
+                    f"'MiniMax H3' in den Einstellungen (Model visibility) sichtbar schalten."
+                )
+        return resolved[wanted]
 
     def upload(local: Path) -> str:
         if dry_run:
@@ -408,11 +437,14 @@ def render_scenes(project: Project, *, only: list[str] | None = None, force: boo
                 })
             if not references:
                 raise ConfigError(f"Szene '{scene['id']}' (omni) braucht Bilder der Girls (girls[].image).")
-        model = mcfg["omni_model"] if mode == "omni" else mcfg["model"]
+        if mode == "omni":
+            model = model_for(mcfg["omni_model"], mcfg.get("fallback_omni_model", ""))
+        else:
+            model = model_for(mcfg["model"], mcfg.get("fallback_model", ""))
         seed = scene_seed(project, scene["id"], variant)
         body = assemble_request(
-            project, scene, mode=mode, defaults=defaults_for(model), preset=preset,
-            seed=seed, keyframe_path=keyframe_path, references=references,
+            project, scene, mode=mode, defaults=defaults_cache.get(model, {}), preset=preset,
+            seed=seed, keyframe_path=keyframe_path, references=references, model=model,
         )
         meta = {
             "scene": scene["id"], "variant": variant, "mode": mode,

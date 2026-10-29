@@ -37,9 +37,11 @@ dem Bass, der Hochtöner zittert mit den Hi-Hats.
 
 ## Voraussetzungen
 
-- **Maestro** in Pinokio (Version mit **MiniMax H3**, ab v1.6.5), Modell *H3 First / Last – Pruned* und
-  *H3 Omni – Pruned* in den Maestro-Einstellungen sichtbar. Beim ersten Clip lädt Maestro die
-  H3-Gewichte und die Turbo-LoRA automatisch (viele GB, dauert einmalig).
+- **Maestro** in Pinokio, am besten aktuell (3.x, in Pinokio „Update“): Modelle *H3 Fused 4-Step – Frames*,
+  *H3 Fused 4-Step – References* und *Qwen Image 2.1* in den Maestro-Einstellungen sichtbar schalten.
+  Beim ersten Mal lädt Maestro die Gewichte automatisch (viele GB, dauert einmalig).
+  Ältere Maestro-Versionen gehen auch: dann nimmt das Tool automatisch H3 *First / Last* + Turbo-LoRA und
+  Krea 2 für die Keyframes.
 - **Python 3.10+** (python.org, oder das Python aus Pinokio wird automatisch genommen)
 - **ffmpeg** – am besten `winget install Gyan.FFmpeg` (dann wird die RTX 5080 per **NVENC** zum Kodieren benutzt).
   Ohne ffmpeg im PATH wird ein mitinstalliertes ffmpeg benutzt; fehlt dort NVENC, wird automatisch auf CPU (x264) umgeschaltet.
@@ -48,10 +50,19 @@ dem Bass, der Hochtöner zittert mit den Hi-Hats.
 ## Einrichtung (einmalig)
 
 1. `setup.bat` doppelklicken. Legt `.venv`, `projekt.json`, `musik\` und `bilder\` an.
-2. **Songs**: In `projekt.json` steht schon Song 1:
+2. **Songs**: In `projekt.json` steht schon die Playlist:
    ```json
-   "songs": [ {"find": "Symphonie und Odyssee"} ]
+   "songs": [
+     {"find": "Symphonie und Odyssee"},
+     {"find": "Accordion Rave Bounce 153"},
+     {"find": "Tubular Bells of Berlin"},
+     {"find": "Ocarina of the Underground"},
+     {"find": ["Didgeridoo", "Digeridoo", "Diggeridoo", "Didjeridoo", "Didgeridu", "Didjeridu"]}
+   ]
    ```
+   Eine Liste bei `find` = verschiedene Schreibweisen, die erste passende Datei wird genommen.
+   Ist ein Song noch nicht heruntergeladen, wird er mit einem Hinweis übersprungen und kommt automatisch
+   dazu, sobald die Datei im Suchordner liegt.
    `find` sucht die Datei (WAV/MP3/FLAC, Groß/Klein, Umlaute und `_` egal) in den Ordnern unter
    `"song_search"`: `musik\`, `Downloads`, `Downloads\suno`, `C:\Download`, `C:\Download\suno` und
    `F:\Pinokio Projekt Fire und ice` (bis 3 Ordner tief). Der Fundort wird in
@@ -72,7 +83,7 @@ dem Bass, der Hochtöner zittert mit den Hi-Hats.
 | Schritt | Datei | Was passiert |
 |---|---|---|
 | Test (optional) | `demo_test.bat` | Testlauf ohne Maestro mit künstlicher Musik – prüft ffmpeg/NVENC und den ganzen Ablauf |
-| 0 | `0_keyframes_erstellen.bat` | Standbild pro Girl-Szene aus `girl1.png` + `girl2.png` (Maestro: Krea 2 Turbo Identity Edit) → `bilder\keyframes\` |
+| 0 | `0_keyframes_erstellen.bat` | Standbild pro Girl-Szene aus `girl1.png` + `girl2.png` (Maestro: Qwen Image 2.1) → `bilder\keyframes\` |
 | 1 | `1_szenen_rendern.bat` | Schickt alle Szenen an Maestro (MiniMax H3), wartet, lädt die Clips nach `arbeitsordner\szenen\` |
 | 2 | `2_vorschau.bat` | Rendert 2 Minuten ab Minute 5 → `ausgabe\..._vorschau.mp4` zum Prüfen |
 | 3 | `3_video_bauen.bat` | Rendert das komplette Video → `ausgabe\techno_girls_1h.mp4` + `..._youtube_beschreibung.txt` |
@@ -117,11 +128,16 @@ einen Ordner legen und unter `"clips_folder"` eintragen; Dateinamen mit `loop` g
 ## Keyframes der Girls (Schritt 0)
 
 Für jede Szene mit Girls erzeugt `0_keyframes_erstellen.bat` ein Standbild, in dem beide (oder eins) aus
-deinen Fotos in der Szene stehen – mit Maestros **Krea 2 Turbo Identity Edit** (behält Gesichter, Haare,
-Outfits; 2 Referenzbilder, 8 Schritte). Mit `"candidates": 2` entsteht zusätzlich `<id>__alt2.png`;
+deinen Fotos in der Szene stehen – mit **Qwen Image 2.1** in Maestro (bis zu 10 Referenzbilder, behält
+Gesichter, Haare und Outfits; 40 Schritte, schneller: `"model": "qwen_image_21_7B_turbo"` mit 8 Schritten).
+Ohne Qwen Image 2.1 nimmt das Tool automatisch Krea 2 Turbo Identity Edit. Mit `"candidates": 2` entsteht zusätzlich `<id>__alt2.png`;
 gefällt dir die Variante besser, einfach umbenennen. Unpassendes Bild löschen → beim nächsten Start neu.
 Szenen mit Keyframe rendert H3 mit diesem Bild als erstem **und** letztem Frame → nahtloser Loop, und die
 Girls sehen in allen Clips gleich aus.
+
+> **Lizenz beachten:** Laut Maestro steht Qwen Image 2.1 unter der *Qwen Research License* – nur für nicht-
+> kommerzielle Nutzung. Ist dein YouTube-Kanal monetarisiert, gilt das als kommerziell: dann
+> `"model": "krea2_turbo_edit"` nehmen oder die Lizenz bei Qwen klären.
 
 Lieber **ComfyUI** (z. B. mit deinem eigenen Girl-LoRA oder PuLID/FaceID)? Workflow in ComfyUI öffnen,
 ins positive Prompt-Feld `{{PROMPT}}` schreiben, mit **Export (API)** speichern und eintragen:
@@ -133,11 +149,13 @@ Die beiden ersten `LoadImage`-Knoten bekommen `girl1.png` / `girl2.png` (oder Pl
 
 ## Wie „H3 Steps4“ benutzt wird
 
+- Standard ist **H3 Fused 4-Step** (`minimax_h3_fused_turbo`, für Omni-Szenen `minimax_h3_ref2va_fused_turbo`):
+  Turbo steckt schon im Modell, **4 Schritte**, Start- und Endbild werden unterstützt. Eine extra Turbo-LoRA
+  lehnt Maestro bei diesen Modellen ab – das Tool lässt sie deshalb weg.
 - Gibt es in Maestro ein gespeichertes **Preset mit dem Namen aus `maestro.preset`** (Standard: `H3 Steps4`),
-  übernimmt das Tool dessen **Schritte, LoRAs und Parameter**.
-- Sonst: H3 mit der **Turbo-LoRA** `minimax_h3_turbo_4step_ckpt500.safetensors`, **4 Schritte**, Stärke `0.70`
-  (`maestro.steps`, `maestro.turbo_strength`). Maestros eigener Turbo-Haken nimmt immer 6 Schritte –
-  deshalb gibt das Tool die LoRA direkt mit 4 Schritten an.
+  übernimmt das Tool dessen **Schritte, LoRAs und Parameter** (Turbo-LoRAs werden beim Fused-Modell entfernt).
+- Kennt dein Maestro das Fused-Modell nicht (ältere Version), nimmt das Tool automatisch H3 *First / Last* mit der
+  **Turbo-LoRA** `minimax_h3_turbo_4step_ckpt500.safetensors`, 4 Schritte, Stärke `0.70`.
 - Auflösung `1280x704` (H3-720p), `175` Frames (7,3 s @ 24 fps). H3 akzeptiert nur 17·n+5 Frames (124, 141, …, 243);
   das Tool rundet passend. Mit 16 GB VRAM passt das in ein H3-Fenster.
 

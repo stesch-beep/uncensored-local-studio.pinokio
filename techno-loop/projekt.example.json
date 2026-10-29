@@ -7,12 +7,12 @@
     "_hinweis": "url: auto = Maestro wird automatisch gesucht, sonst Adresse aus Maestro 'Open Web UI' eintragen. preset = Name deines gespeicherten Maestro-Presets.",
     "url": "auto",
     "preset": "H3 Steps4",
-    "model": "minimax_h3",
-    "omni_model": "minimax_h3_ref2va",
+    "model": "minimax_h3_fused_turbo",
+    "omni_model": "minimax_h3_ref2va_fused_turbo",
     "resolution": "1280x704",
     "frames": 175,
     "steps": 4,
-    "turbo": true,
+    "turbo": "auto",
     "turbo_strength": 0.7,
     "variants": 2
   },
@@ -31,9 +31,9 @@
   ],
 
   "keyframes": {
-    "_hinweis": "0_keyframes_erstellen.bat: Standbild pro Girl-Szene aus girl1/girl2 -> bilder/keyframes/<id>.png. engine maestro (Krea 2 Identity Edit) oder comfyui (comfyui_workflow = Export (API) mit {{PROMPT}}).",
+    "_hinweis": "0_keyframes_erstellen.bat: Standbild pro Girl-Szene aus girl1/girl2 -> bilder/keyframes/<id>.png. engine maestro (Qwen Image 2.1, schneller: qwen_image_21_7B_turbo) oder comfyui (comfyui_workflow = Export (API) mit {{PROMPT}}).",
     "engine": "maestro",
-    "model": "krea2_turbo_edit",
+    "model": "qwen_image_21_7B",
     "candidates": 2
   },
 
@@ -114,7 +114,11 @@
   ],
   "default_artist": "",
   "songs": [
-    {"find": "Symphonie und Odyssee"}
+    {"find": "Symphonie und Odyssee"},
+    {"find": "Accordion Rave Bounce 153"},
+    {"find": "Tubular Bells of Berlin"},
+    {"find": "Ocarina of the Underground"},
+    {"find": ["Didgeridoo", "Digeridoo", "Diggeridoo", "Didjeridoo", "Didgeridu", "Didjeridu"]}
   ],
 
   "audio": {

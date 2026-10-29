@@ -37,16 +37,36 @@ class Basics(unittest.TestCase):
                 "turbo_strength": 0.7}
         preset = {"activated_loras": ["style.safetensors"], "loras_multipliers": "",
                   "params": {"num_inference_steps": 4, "minimax_h3_turbo_mode": True}}
-        loras, mult, steps = maestro._lora_settings(mcfg, preset)
+        loras, mult, steps = maestro._lora_settings(mcfg, preset, "minimax_h3")
         self.assertEqual(loras, ["style.safetensors", "minimax_h3_turbo_4step_ckpt500.safetensors"])
         self.assertEqual(mult, "1.00 0.70")
         self.assertEqual(steps, 4)
+        # A fused 4-step model has Turbo built in: a Turbo LoRA from the preset is dropped.
+        preset["activated_loras"] = ["style.safetensors", "minimax_h3_turbo_v4_step600_ema.safetensors"]
+        preset["loras_multipliers"] = "0.8 1.0"
+        loras, mult, _ = maestro._lora_settings(mcfg, preset, "minimax_h3_fused_turbo")
+        self.assertEqual((loras, mult), (["style.safetensors"], "0.8"))
 
     def test_parse_song_name(self):
         self.assertEqual(parse_song_name(Path("03 - Amelie Lens - Feel It.mp3")), ("Feel It", "Amelie Lens"))
         self.assertEqual(parse_song_name(Path("Only Title.wav")), ("Only Title", ""))
         self.assertEqual(parse_song_name(Path("12_Artist - A - B.flac")), ("A - B", "Artist"))
         self.assertEqual(parse_song_name(Path("Ice Storm (1).wav")), ("Ice Storm", ""))
+
+    def test_missing_songs_are_skipped_and_spelling_variants_found(self):
+        tmp = Path(tempfile.mkdtemp())
+        try:
+            (tmp / "suno").mkdir()
+            for name in ("Symphonie und Odyssee.wav", "Didjeridoo Desert Drop.wav"):
+                (tmp / "suno" / name).write_bytes(b"RIFF")
+            cfg = {"song_search": ["suno"], "songs": [
+                {"find": "Symphonie und Odyssee"}, {"find": "Tubular Bells of Berlin"},
+                {"find": ["Didgeridoo", "Didjeridoo"]}]}
+            (tmp / "projekt.json").write_text(json.dumps(cfg))
+            titles = [s.title for s in load_project(tmp / "projekt.json").songs()]
+            self.assertEqual(titles, ["Symphonie und Odyssee", "Didjeridoo Desert Drop"])
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
     def test_normalize_for_search(self):
         from technoloop.songs import normalize
@@ -63,6 +83,7 @@ class FakeMaestro(BaseHTTPRequestHandler):
     presets: list = []
     video_bytes = b""
     image_bytes = b""
+    models = {"minimax_h3", "minimax_h3_ref2va", "krea2_turbo_edit"}  # like an older Maestro
 
     def log_message(self, *args):
         pass
@@ -78,7 +99,7 @@ class FakeMaestro(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith("/api/v1/defaults/"):
             model = self.path.rsplit("/", 1)[-1]
-            if model not in ("minimax_h3", "minimax_h3_ref2va", "krea2_turbo_edit"):
+            if model not in self.models:
                 return self._json({"detail": "Unknown model"}, 404)
             return self._json({"prompt": "default", "num_inference_steps": 20, "video_length": 124,
                                "sliding_window_size": 345, "resolution": "864x480", "guidance_scale": 1.0,
@@ -133,6 +154,7 @@ class MaestroClientTest(unittest.TestCase):
                 "-t", "1", "-pix_fmt", "yuv420p", str(clip)])
         FakeMaestro.video_bytes = clip.read_bytes()
         FakeMaestro.jobs, FakeMaestro.requests, FakeMaestro.uploads, FakeMaestro.presets = {}, [], [], []
+        FakeMaestro.models = {"minimax_h3", "minimax_h3_ref2va", "krea2_turbo_edit"}
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), FakeMaestro)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
@@ -194,6 +216,19 @@ class MaestroClientTest(unittest.TestCase):
         # Second run skips finished clips.
         maestro.render_scenes(project)
         self.assertEqual(len(FakeMaestro.requests), 3)
+
+    def test_fused_4step_models_without_extra_turbo_lora(self):
+        # Current Maestro (3.x) ships "H3 Fused 4-Step" with Turbo baked in; it rejects a Turbo LoRA.
+        FakeMaestro.models |= {"minimax_h3_fused_turbo", "minimax_h3_ref2va_fused_turbo"}
+        project = self._project()
+        maestro.render_scenes(project)
+        loop, omni, crowd = FakeMaestro.requests
+        self.assertEqual(loop["model_type"], "minimax_h3_fused_turbo")
+        self.assertEqual(omni["model_type"], "minimax_h3_ref2va_fused_turbo")
+        for req in (loop, omni, crowd):
+            self.assertEqual(req["activated_loras"], [])
+            self.assertEqual(req["num_inference_steps"], 4)
+        self.assertEqual(loop["image_start"], loop["image_end"])
 
     def test_preset_wins(self):
         FakeMaestro.presets = [{"id": "p1", "name": "H3 Steps4", "model_type": "minimax_h3",
@@ -259,6 +294,7 @@ class KeyframeTest(unittest.TestCase):
         for name in ("girl1.png", "girl2.png"):
             (self.tmp / "bilder" / name).write_bytes(png.tobytes())
         FakeMaestro.jobs, FakeMaestro.requests, FakeMaestro.uploads, FakeMaestro.presets = {}, [], [], []
+        FakeMaestro.models = {"minimax_h3", "minimax_h3_ref2va", "krea2_turbo_edit"}
         FakeComfy.prompts, FakeComfy.uploads = [], []
         self.servers = []
         for handler in (FakeMaestro, FakeComfy):
@@ -311,6 +347,19 @@ class KeyframeTest(unittest.TestCase):
         # Second run: keyframe exists -> nothing generated.
         make_keyframes(project)
         self.assertEqual(sum(1 for r in FakeMaestro.requests if r["model_type"] == "krea2_turbo_edit"), 1)
+
+    def test_qwen_image_21_when_available(self):
+        from technoloop.keyframes import make_keyframes
+
+        FakeMaestro.models |= {"qwen_image_21_7B"}
+        project = self._project()
+        self.assertEqual(make_keyframes(project), 0)
+        (req,) = FakeMaestro.requests
+        self.assertEqual(req["model_type"], "qwen_image_21_7B")
+        self.assertEqual(req["video_prompt_type"], "I")
+        self.assertEqual(len(req["image_refs"]), 2)
+        self.assertIn("image 1", req["prompt"])
+        self.assertIn("image 2", req["prompt"])
 
     def test_comfyui_workflow_placeholders(self):
         from technoloop.keyframes import make_keyframes

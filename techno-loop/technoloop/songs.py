@@ -60,7 +60,14 @@ def audio_files(folders: list[Path], depth: int) -> list[tuple[int, Path]]:
     return found
 
 
-def find_song(project: Project, term: str, folder: str | None = None) -> tuple[Path | None, list[Path]]:
+def find_song(project: Project, term, folder: str | None = None) -> tuple[Path | None, list[Path]]:
+    """Best match for a name (or the first of several alternative spellings that matches)."""
+    if isinstance(term, (list, tuple)):
+        for alternative in term:
+            found, others = find_song(project, alternative, folder)
+            if found:
+                return found, others
+        return None, []
     wanted = normalize(term)
     depth = int(project.get("song_search_depth") or 3)
     matches = []
@@ -72,6 +79,9 @@ def find_song(project: Project, term: str, folder: str | None = None) -> tuple[P
     matches.sort(key=lambda m: m[0])
     paths = [p for _, p in matches]
     return (paths[0] if paths else None), paths[1:6]
+
+
+_warned: set[str] = set()
 
 
 def _lock_file(project: Project) -> Path:
@@ -89,6 +99,7 @@ def resolve_playlist(project: Project) -> list[Song]:
     changed = False
     default_artist = project.get("default_artist") or ""
     songs: list[Song] = []
+    missing: list[str] = []
     for entry in entries:
         if isinstance(entry, str):
             entry = {"file": entry}
@@ -102,13 +113,12 @@ def resolve_playlist(project: Project) -> list[Song]:
                 path = pinned
             else:
                 path, others = find_song(project, entry["find"], entry.get("folder"))
+                label = entry["find"] if isinstance(entry["find"], str) else " / ".join(entry["find"])
                 if not path:
-                    folders = ", ".join(str(p) for p in search_folders(project, entry.get("folder"))) or "keine"
-                    raise ConfigError(
-                        f"Song '{entry['find']}' nicht gefunden. Gesucht in: {folders}. "
-                        "Ordner unter \"song_search\" ergänzen oder den Pfad als \"file\" eintragen."
-                    )
-                print(f"  Song '{entry['find']}' gefunden: {path}")
+                    # Not downloaded yet: skip it for now, it joins the video once the file is there.
+                    missing.append(label)
+                    continue
+                print(f"  Song '{label}' gefunden: {path}")
                 for other in others:
                     print(f"      (weitere Treffer: {other})")
                 lock[key] = str(path)
@@ -120,6 +130,13 @@ def resolve_playlist(project: Project) -> list[Song]:
             path, entry.get("title") or title, entry.get("artist", artist or default_artist),
             explicit=bool(entry.get("title")),
         ))
+    new_missing = [m for m in missing if m not in _warned]
+    if new_missing:
+        folders = ", ".join(str(p) for p in search_folders(project)) or "keine"
+        for label in new_missing:
+            print(f"  HINWEIS: Song '{label}' noch nicht gefunden – wird übersprungen, bis die Datei da ist.")
+        print(f"     (gesucht in: {folders})")
+        _warned.update(new_missing)
     if changed:
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         lock_path.write_text(json.dumps(lock, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -130,6 +147,11 @@ def resolve_playlist(project: Project) -> list[Song]:
                 if path.suffix.lower() in AUDIO_EXTENSIONS:
                     title, artist = parse_song_name(path)
                     songs.append(Song(path, title, artist or default_artist))
+    if not songs and missing:
+        raise ConfigError(
+            f"Keiner der Songs gefunden ({', '.join(missing)}). WAV/MP3 in einen der Suchordner legen "
+            "(z. B. C:/Download/suno) oder den Ordner unter \"song_search\" ergänzen."
+        )
     if not songs:
         raise ConfigError(
             "Keine Songs gefunden. Trage sie in projekt.json unter \"songs\" ein (z. B. {\"find\": \"Songname\"}) "
