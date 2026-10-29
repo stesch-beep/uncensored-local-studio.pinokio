@@ -108,6 +108,14 @@ def cmd_info(args) -> int:
     return 0
 
 
+def cmd_keyframes(args) -> int:
+    from .keyframes import make_keyframes
+
+    project = load_project(args.projekt)
+    failures = make_keyframes(project, only=args.nur, force=args.neu, dry_run=args.test, url=args.url)
+    return 1 if failures else 0
+
+
 def _candidates(project, term: str | None):
     import os
 
@@ -196,6 +204,15 @@ def main(argv=None) -> int:
             pass
     parser = argparse.ArgumentParser(prog="technoloop", description="1-Stunden-Techno-Loop-Video aus Maestro-H3-Szenen")
     sub = parser.add_subparsers(dest="cmd", required=True)
+
+    p = sub.add_parser("keyframes", aliases=["bilder"],
+                       help="Standbilder der Girls pro Szene erzeugen (Maestro Krea 2 Identity Edit oder ComfyUI)")
+    p.add_argument("projekt", nargs="?", default="projekt.json")
+    p.add_argument("--nur", nargs="+", help="nur diese Szenen-ids")
+    p.add_argument("--neu", action="store_true", help="vorhandene Keyframes neu erzeugen")
+    p.add_argument("--test", action="store_true", help="nur Prompts anzeigen")
+    p.add_argument("--url", help="Maestro-Adresse (überschreibt projekt.json)")
+    p.set_defaults(func=cmd_keyframes)
 
     p = sub.add_parser("szenen", aliases=["scenes"], help="Szenen mit Maestro (MiniMax H3) rendern")
     p.add_argument("projekt", nargs="?", default="projekt.json")

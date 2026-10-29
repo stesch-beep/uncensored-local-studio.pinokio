@@ -62,6 +62,7 @@ class FakeMaestro(BaseHTTPRequestHandler):
     uploads: list = []
     presets: list = []
     video_bytes = b""
+    image_bytes = b""
 
     def log_message(self, *args):
         pass
@@ -77,7 +78,7 @@ class FakeMaestro(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith("/api/v1/defaults/"):
             model = self.path.rsplit("/", 1)[-1]
-            if model not in ("minimax_h3", "minimax_h3_ref2va"):
+            if model not in ("minimax_h3", "minimax_h3_ref2va", "krea2_turbo_edit"):
                 return self._json({"detail": "Unknown model"}, 404)
             return self._json({"prompt": "default", "num_inference_steps": 20, "video_length": 124,
                                "sliding_window_size": 345, "resolution": "864x480", "guidance_scale": 1.0,
@@ -90,13 +91,14 @@ class FakeMaestro(BaseHTTPRequestHandler):
             done = job["polls"] > 1
             return self._json({"job_id": job["id"], "status": "completed" if done else "running",
                                "progress": 100 if done else 50, "step": 2, "total_steps": 4, "phase": "",
-                               "message": "", "output_files": [f"{job['id']}.mp4"] if done else [],
+                               "message": "", "output_files": [f"{job['id']}{job['ext']}"] if done else [],
                                "error": None, "oom_info": None})
         if self.path.startswith("/api/v1/file/"):
+            data = self.image_bytes if self.path.endswith(".png") else self.video_bytes
             self.send_response(200)
-            self.send_header("Content-Length", str(len(self.video_bytes)))
+            self.send_header("Content-Length", str(len(data)))
             self.end_headers()
-            self.wfile.write(self.video_bytes)
+            self.wfile.write(data)
             return
         self._json({"detail": "not found"}, 404)
 
@@ -112,7 +114,7 @@ class FakeMaestro(BaseHTTPRequestHandler):
             payload = json.loads(body)
             self.requests.append(payload)
             job_id = f"job{len(self.requests)}"
-            self.jobs[job_id] = {"id": job_id, "polls": 0}
+            self.jobs[job_id] = {"id": job_id, "polls": 0, "ext": ".png" if payload.get("image_mode") == 1 else ".mp4"}
             return self._json({"job_id": job_id})
         if self.path.startswith("/api/v1/cancel/"):
             return self._json({"status": "cancelled"})
@@ -204,6 +206,132 @@ class MaestroClientTest(unittest.TestCase):
         self.assertEqual(req["activated_loras"][1], "style.safetensors")
         self.assertEqual(req["loras_multipliers"], "0.8 0.5")
         self.assertEqual(req["flow_shift"], 5)
+
+
+class FakeComfy(BaseHTTPRequestHandler):
+    prompts: list = []
+    uploads: list = []
+    image_bytes = b""
+
+    def log_message(self, *args):
+        pass
+
+    def _json(self, obj):
+        data = json.dumps(obj).encode()
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        if self.path == "/upload/image":
+            name = f"up{len(self.uploads)}.png"
+            self.uploads.append(name)
+            return self._json({"name": name, "subfolder": "", "type": "input"})
+        if self.path == "/prompt":
+            self.prompts.append(json.loads(body)["prompt"])
+            return self._json({"prompt_id": f"p{len(self.prompts)}"})
+
+    def do_GET(self):
+        if self.path.startswith("/history/"):
+            pid = self.path.rsplit("/", 1)[-1]
+            return self._json({pid: {"outputs": {"9": {"images": [{"filename": "out.png", "subfolder": "",
+                                                                     "type": "output"}]}}}})
+        if self.path.startswith("/view?"):
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(self.image_bytes)))
+            self.end_headers()
+            self.wfile.write(self.image_bytes)
+
+
+@unittest.skipUnless(HAVE_FFMPEG, "ffmpeg missing")
+class KeyframeTest(unittest.TestCase):
+    def setUp(self):
+        import cv2
+
+        self.tmp = Path(tempfile.mkdtemp())
+        (self.tmp / "bilder").mkdir()
+        img = np.zeros((64, 64, 3), np.uint8)
+        img[:] = (30, 60, 200)
+        ok, png = cv2.imencode(".png", img)
+        FakeMaestro.image_bytes = FakeComfy.image_bytes = png.tobytes()
+        for name in ("girl1.png", "girl2.png"):
+            (self.tmp / "bilder" / name).write_bytes(png.tobytes())
+        FakeMaestro.jobs, FakeMaestro.requests, FakeMaestro.uploads, FakeMaestro.presets = {}, [], [], []
+        FakeComfy.prompts, FakeComfy.uploads = [], []
+        self.servers = []
+        for handler in (FakeMaestro, FakeComfy):
+            srv = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+            threading.Thread(target=srv.serve_forever, daemon=True).start()
+            self.servers.append(srv)
+        self.maestro_url = f"http://127.0.0.1:{self.servers[0].server_address[1]}"
+        self.comfy_url = f"http://127.0.0.1:{self.servers[1].server_address[1]}"
+
+    def tearDown(self):
+        for srv in self.servers:
+            srv.shutdown()
+            srv.server_close()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _project(self, keyframes=None):
+        cfg = {
+            "maestro": {"url": self.maestro_url, "preset": "", "variants": 1, "poll_seconds": 0.01},
+            "keyframes": keyframes or {},
+            "girls": [{"name": "A", "image": "bilder/girl1.png", "look": "blonde"},
+                      {"name": "B", "image": "bilder/girl2.png", "look": "brunette"}],
+            "scenes": [{"id": "dj", "girls": True, "action": "At the DJ booth."},
+                       {"id": "crowd", "action": "Crowd jumps."}],
+        }
+        path = self.tmp / "projekt.json"
+        path.write_text(json.dumps(cfg))
+        return load_project(path)
+
+    def test_maestro_keyframe_turns_scene_into_loop(self):
+        from technoloop.keyframes import make_keyframes
+
+        project = self._project()
+        self.assertEqual(maestro.scene_mode(project, project["scenes"][0]), "omni")
+        self.assertEqual(make_keyframes(project), 0)
+        (req,) = FakeMaestro.requests  # only the girl scene needs a keyframe
+        self.assertEqual(req["model_type"], "krea2_turbo_edit")
+        self.assertEqual(req["image_mode"], 1)
+        self.assertEqual(req["video_length"], 1)
+        self.assertEqual(req["video_prompt_type"], "I")
+        self.assertEqual(len(req["image_refs"]), 2)
+        self.assertIn("first reference image", req["prompt"])
+        target = self.tmp / "bilder" / "keyframes" / "dj.png"
+        self.assertTrue(target.is_file())
+        # The scene now renders as a seamless H3 loop from that keyframe.
+        self.assertEqual(maestro.scene_mode(project, project["scenes"][0]), "keyframe")
+        maestro.render_scenes(project, only=["dj"])
+        h3 = FakeMaestro.requests[-1]
+        self.assertEqual(h3["model_type"], "minimax_h3")
+        self.assertEqual(h3["image_start"], h3["image_end"])
+        # Second run: keyframe exists -> nothing generated.
+        make_keyframes(project)
+        self.assertEqual(sum(1 for r in FakeMaestro.requests if r["model_type"] == "krea2_turbo_edit"), 1)
+
+    def test_comfyui_workflow_placeholders(self):
+        from technoloop.keyframes import make_keyframes
+
+        workflow = {
+            "3": {"class_type": "KSampler", "inputs": {"seed": 5, "steps": 20}},
+            "6": {"class_type": "CLIPTextEncode", "inputs": {"text": "{{PROMPT}}, masterpiece"}},
+            "10": {"class_type": "LoadImage", "inputs": {"image": "old_a.png"}},
+            "11": {"class_type": "LoadImage", "inputs": {"image": "old_b.png"}},
+            "9": {"class_type": "SaveImage", "inputs": {"images": ["8", 0]}},
+        }
+        (self.tmp / "wf.json").write_text(json.dumps(workflow))
+        project = self._project({"engine": "comfyui", "comfyui_url": self.comfy_url, "comfyui_workflow": "wf.json"})
+        self.assertEqual(make_keyframes(project), 0)
+        (graph,) = FakeComfy.prompts
+        self.assertTrue(graph["6"]["inputs"]["text"].endswith(", masterpiece"))
+        self.assertIn("brunette", graph["6"]["inputs"]["text"])
+        self.assertEqual([graph["10"]["inputs"]["image"], graph["11"]["inputs"]["image"]], ["up0.png", "up1.png"])
+        self.assertNotEqual(graph["3"]["inputs"]["seed"], 5)
+        self.assertTrue((self.tmp / "bilder" / "keyframes" / "dj.png").is_file())
+        self.assertEqual(FakeMaestro.requests, [])
 
 
 def _synthetic_beats(bpm: float, seconds: float, sr: int = audio.ANALYSIS_SR) -> np.ndarray:

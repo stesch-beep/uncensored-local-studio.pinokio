@@ -35,6 +35,18 @@ DEFAULTS = {
         "workspace": "",
         "extra_params": {},
     },
+    "keyframes": {
+        # Standbilder der Girls pro Szene (werden in H3 erster = letzter Frame -> nahtloser Loop).
+        "engine": "maestro",            # maestro | comfyui
+        "model": "krea2_turbo_edit",     # Maestro: Krea 2 Turbo Identity Edit (2 Referenzbilder)
+        "resolution": "1280x720",
+        "steps": 0,                      # 0 = Standard des Modells
+        "folder": "bilder/keyframes",
+        "candidates": 1,
+        "extra_params": {},
+        "comfyui_url": "http://127.0.0.1:8188",
+        "comfyui_workflow": "",          # Workflow im API-Format (ComfyUI: "Export (API)")
+    },
     "style": (
         "Cinematic live festival concert footage at night, gigantic main stage, "
         "dense haze, deep blue and cyan lighting with red accents, sharp laser beams, "

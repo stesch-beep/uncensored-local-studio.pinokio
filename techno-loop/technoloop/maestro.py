@@ -138,11 +138,20 @@ def _cast_sentence(cast: list[dict]) -> str:
     return "Women DJs: " + "; ".join(f"a woman, {look}" for look in looks) + "."
 
 
+def keyframe_path_for(project: Project, scene: dict) -> Path | None:
+    """The scene's keyframe: "keyframe" from projekt.json, else bilder/keyframes/<id>.png
+    (where the 'keyframes' command saves generated ones)."""
+    if scene.get("keyframe"):
+        return project.path(scene["keyframe"])
+    folder = project.path(project["keyframes"].get("folder"))
+    return folder / f"{scene['id']}.png" if folder else None
+
+
 def scene_mode(project: Project, scene: dict) -> str:
     mode = scene.get("mode", "auto")
     if mode != "auto":
         return mode
-    keyframe = project.path(scene.get("keyframe"))
+    keyframe = keyframe_path_for(project, scene)
     if keyframe and keyframe.is_file():
         return "keyframe"
     if any((p := project.path(g.get("image"))) and p.is_file() for g in _cast(project, scene)):
@@ -379,9 +388,9 @@ def render_scenes(project: Project, *, only: list[str] | None = None, force: boo
         keyframe_path = None
         references = None
         if mode == "keyframe":
-            local = project.path(scene["keyframe"])
+            local = keyframe_path_for(project, scene)
             if not local or not local.is_file():
-                raise ConfigError(f"Keyframe für Szene '{scene['id']}' fehlt: {scene.get('keyframe')}")
+                raise ConfigError(f"Keyframe für Szene '{scene['id']}' fehlt: {local}")
             keyframe_path = upload(local)
         elif mode == "omni":
             references = []

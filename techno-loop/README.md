@@ -63,15 +63,16 @@ dem Bass, der Hochtöner zittert mit den Hi-Hats.
 3. **Bilder** nach `bilder\`:
    - `girl1.png`, `girl2.png` – je ein gutes Bild deiner beiden Girls (für Identität/Wiedererkennung).
    - optional `vorbild.jpg` – z. B. das Pinterest-Bild als Stil-Referenz (Bühne, Licht, Farben).
-   - optional Keyframes, z. B. `keyframe_dj_pult.png` – ein fertiges Standbild der Szene mit beiden Girls
-     (in Maestro im Bild-Modus erstellt, z. B. mit Qwen Image Edit / Flux Klein aus den beiden Girl-Fotos).
+   - Keyframes (Standbild pro Szene mit den Girls) macht Schritt 0 automatisch nach `bilder\keyframes\<id>.png`.
+     Eigene Bilder kannst du dort auch einfach ablegen (Dateiname = Szenen-id), dann werden sie benutzt.
 4. In `projekt.json` die `look`-Beschreibung der Girls anpassen (Haare, Outfit) – die steht in jedem Prompt.
 
 ## Ablauf
 
 | Schritt | Datei | Was passiert |
 |---|---|---|
-| 0 (optional) | `demo_test.bat` | Testlauf ohne Maestro mit künstlicher Musik – prüft ffmpeg/NVENC und den ganzen Ablauf |
+| Test (optional) | `demo_test.bat` | Testlauf ohne Maestro mit künstlicher Musik – prüft ffmpeg/NVENC und den ganzen Ablauf |
+| 0 | `0_keyframes_erstellen.bat` | Standbild pro Girl-Szene aus `girl1.png` + `girl2.png` (Maestro: Krea 2 Turbo Identity Edit) → `bilder\keyframes\` |
 | 1 | `1_szenen_rendern.bat` | Schickt alle Szenen an Maestro (MiniMax H3), wartet, lädt die Clips nach `arbeitsordner\szenen\` |
 | 2 | `2_vorschau.bat` | Rendert 2 Minuten ab Minute 5 → `ausgabe\..._vorschau.mp4` zum Prüfen |
 | 3 | `3_video_bauen.bat` | Rendert das komplette Video → `ausgabe\techno_girls_1h.mp4` + `..._youtube_beschreibung.txt` |
@@ -112,6 +113,23 @@ Gefällt dir ein Clip nicht: einfach die MP4 in `arbeitsordner\szenen\` löschen
 fertige Clips werden übersprungen. Eigene fertige Clips (z. B. direkt in Maestro erzeugt) kannst du in
 einen Ordner legen und unter `"clips_folder"` eintragen; Dateinamen mit `loop` gelten als nahtlose Loops.
 
+## Keyframes der Girls (Schritt 0)
+
+Für jede Szene mit Girls erzeugt `0_keyframes_erstellen.bat` ein Standbild, in dem beide (oder eins) aus
+deinen Fotos in der Szene stehen – mit Maestros **Krea 2 Turbo Identity Edit** (behält Gesichter, Haare,
+Outfits; 2 Referenzbilder, 8 Schritte). Mit `"candidates": 2` entsteht zusätzlich `<id>__alt2.png`;
+gefällt dir die Variante besser, einfach umbenennen. Unpassendes Bild löschen → beim nächsten Start neu.
+Szenen mit Keyframe rendert H3 mit diesem Bild als erstem **und** letztem Frame → nahtloser Loop, und die
+Girls sehen in allen Clips gleich aus.
+
+Lieber **ComfyUI** (z. B. mit deinem eigenen Girl-LoRA oder PuLID/FaceID)? Workflow in ComfyUI öffnen,
+ins positive Prompt-Feld `{{PROMPT}}` schreiben, mit **Export (API)** speichern und eintragen:
+```json
+"keyframes": {"engine": "comfyui", "comfyui_url": "http://127.0.0.1:8188", "comfyui_workflow": "bilder/girls_workflow_api.json"}
+```
+Die beiden ersten `LoadImage`-Knoten bekommen `girl1.png` / `girl2.png` (oder Platzhalter `{{IMAGE1}}`, `{{IMAGE2}}`),
+`seed` wird pro Szene gesetzt (oder `{{SEED}}`), Größe über `{{WIDTH}}`/`{{HEIGHT}}`.
+
 ## Wie „H3 Steps4“ benutzt wird
 
 - Gibt es in Maestro ein gespeichertes **Preset mit dem Namen aus `maestro.preset`** (Standard: `H3 Steps4`),
@@ -128,7 +146,7 @@ einen Ordner legen und unter `"clips_folder"` eintragen; Dateinamen mit `loop` g
 {
   "id": "dj_pult",
   "girls": true,                         // true = beide, [0] = Girl 1, [1] = Girl 2, weglassen = ohne Girls
-  "keyframe": "bilder/keyframe_dj_pult.png",
+  "keyframe": "bilder/eigenes_bild.png",   // optional, sonst bilder/keyframes/dj_pult.png
   "tags": ["girls"],
   "action": "Behind a huge glowing DJ booth ... The camera slowly pushes in."
 }
@@ -173,8 +191,8 @@ Weitere Szenen-Optionen: `frames`, `variants`, `weight` (wie oft sie vorkommt), 
 
 Maestro bleibt der Generator für die Video-Clips (H3). Die anderen Programme passen so dazu:
 
-- **Fooocus / ComfyUI**: Keyframes und Girl-Bilder erzeugen (z. B. mit FaceID/PuLID für gleiche Gesichter),
-  als PNG nach `bilder\` legen und bei der Szene als `keyframe` eintragen → nahtlose H3-Loops.
+- **ComfyUI**: als Keyframe-Generator direkt eingebunden (siehe oben). **Fooocus**: Bilder dort erzeugen und
+  als `bilder\keyframes\<szenen-id>.png` speichern – werden automatisch benutzt.
 - **MiniMax H3 Studio** oder **ComfyUI-H3-Workflows**: fertige Clips dort erzeugen und in einen Ordner legen,
   der unter `"clips_folder"` steht (Dateiname mit `loop`, wenn Anfang = Ende).
 - **Blender / Unreal Engine**: z. B. einen echten 3D-Lautsprecher rendern (Frontansicht, PNG mit Transparenz)

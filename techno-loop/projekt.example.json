@@ -30,6 +30,13 @@
     }
   ],
 
+  "keyframes": {
+    "_hinweis": "0_keyframes_erstellen.bat: Standbild pro Girl-Szene aus girl1/girl2 -> bilder/keyframes/<id>.png. engine maestro (Krea 2 Identity Edit) oder comfyui (comfyui_workflow = Export (API) mit {{PROMPT}}).",
+    "engine": "maestro",
+    "model": "krea2_turbo_edit",
+    "candidates": 2
+  },
+
   "style": "Cinematic live festival concert footage at night, gigantic main stage, dense haze, deep blue and cyan lighting with red accents, sharp laser beams, high contrast, anamorphic wide lens, 35mm film grain",
   "style_reference": "bilder/vorbild.jpg",
 
@@ -37,7 +44,6 @@
     {
       "id": "dj_pult",
       "girls": true,
-      "keyframe": "bilder/keyframe_dj_pult.png",
       "tags": ["girls"],
       "action": "Behind a huge glowing DJ booth at the front of the main stage both women play techno: the left one turns the mixer knobs, the right one raises both hands and bobs her head to the beat. Behind them a gigantic mechanical sea turtle sculpture with glowing LED lines hovers over the stage and slowly moves its fins. Blue light beams sweep through the haze. The camera slowly pushes in."
     },
