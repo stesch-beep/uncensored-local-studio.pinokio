@@ -139,6 +139,14 @@ class FrameRenderer:
         grade[:, :3] *= pump
         return cv2.transform(out, grade.astype(np.float32))
 
+    def render_overlay(self, f: int) -> np.ndarray:
+        """Only speakers + titles on a transparent BGRA frame (DaVinci Resolve export)."""
+        frame = np.zeros((self.H, self.W, 4), np.uint8)
+        if self.speakers.enabled:
+            self.speakers.draw(frame, float(self.a.cone[f]), float(self.a.tweeter[f]), float(self.a.kick[f]))
+        self.titles.draw(frame, f / self.fps)
+        return frame
+
     def render(self, f: int) -> np.ndarray:
         t = f / self.fps
         si = max(0, bisect.bisect_right(self.starts, t) - 1)
@@ -188,12 +196,15 @@ def render_chunk(job: dict) -> str:
     renderer = FrameRenderer(project, analysis, clips, segments, timeline)
     v = project["video"]
     final = Path(job["out"])
-    out = final.with_name(final.stem + ".tmp.mp4")
+    out = final.with_name(final.stem + ".tmp" + final.suffix)
     log = open(final.with_suffix(".log"), "wb")
+    overlay = job.get("kind") == "overlay"
+    codec = OVERLAY_CODECS[job["encoder"]][0] if overlay else \
+        ff.encoder_args(job["encoder"], int(v["quality"]), int(v["fps"]))
     args = [ff.ffmpeg(), "-hide_banner", "-y", "-loglevel", "warning",
-            "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{renderer.W}x{renderer.H}", "-r", str(v["fps"]),
-            "-i", "-", *ff.encoder_args(job["encoder"], int(v["quality"]), int(v["fps"])),
-            "-an", "-video_track_timescale", "90000", str(out)]
+            "-f", "rawvideo", "-pix_fmt", "bgra" if overlay else "bgr24",
+            "-s", f"{renderer.W}x{renderer.H}", "-r", str(v["fps"]),
+            "-i", "-", *codec, "-an", "-video_track_timescale", "90000", str(out)]
     proc = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=log)
     q: queue.Queue = queue.Queue(maxsize=6)
     error: list[BaseException] = []
@@ -212,7 +223,7 @@ def render_chunk(job: dict) -> str:
     th.start()
     try:
         for n, f in enumerate(range(job["f0"], job["f1"])):
-            frame = renderer.render(f)
+            frame = renderer.render_overlay(f) if overlay else renderer.render(f)
             q.put(np.ascontiguousarray(frame).tobytes())
             if _progress is not None and n % 12 == 0:
                 _progress[job["index"]] = n
@@ -239,6 +250,15 @@ def render_chunk(job: dict) -> str:
 
 
 CHUNK_VERSION = 1
+
+# Overlay with alpha for DaVinci Resolve: (ffmpeg args, file extension)
+OVERLAY_CODECS = {
+    "png": (["-c:v", "png", "-pred", "mixed", "-pix_fmt", "rgba"], ".mov"),        # ~20 GB/h @1080p, sicher
+    "qtrle": (["-c:v", "qtrle", "-pix_fmt", "argb"], ".mov"),                     # QuickTime Animation
+    "prores4444": (["-c:v", "prores_ks", "-profile:v", "4444", "-pix_fmt", "yuva444p10le"], ".mov"),
+    "vp9": (["-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p", "-b:v", "0", "-crf", "28", "-row-mt", "1",
+             "-deadline", "good", "-cpu-used", "4"], ".webm"),                     # winzig, Resolve-Version abhängig
+}
 
 
 def _chunk_grid(segments: list[Segment], fps: float, f0: int, f1: int, chunk_s: float) -> list[tuple[int, int]]:
@@ -301,19 +321,27 @@ def _chunk_key(project: Project, encoder: str, clips: list[Clip], segments: list
     return h.hexdigest()[:20]
 
 
-def render_video(project: Project, config_path: str, state_dir: Path, mix_path: Path,
-                 out_path: Path, f0: int, f1: int, workers: int, *, use_cache: bool = True) -> Path:
+def render_video(project: Project, config_path: str, state_dir: Path, mix_path: Path | None,
+                 out_path: Path, f0: int, f1: int, workers: int, *, use_cache: bool = True,
+                 kind: str = "final") -> Path:
     """Render frames [f0, f1) and mux the audio.
 
     Full builds keep every rendered chunk in arbeitsordner/render/teile; a later
     build only renders chunks whose content changed (e.g. after appending songs).
+    kind="overlay" renders only speakers + titles with alpha (PNG in MOV, no audio).
     """
     v = project["video"]
     fps = float(v["fps"])
-    encoder = ff.pick_encoder(v.get("codec", "h264"), v.get("encoder", "auto"))
+    overlay = kind == "overlay"
+    if overlay:
+        encoder = str(project.get("resolve", {}).get("overlay_codec", "png"))
+        if encoder not in OVERLAY_CODECS:
+            raise ValueError(f"resolve.overlay_codec muss eins von {', '.join(OVERLAY_CODECS)} sein.")
+    else:
+        encoder = ff.pick_encoder(v.get("codec", "h264"), v.get("encoder", "auto"))
     _, analysis, clips, segments, timeline = _load_state(config_path, str(state_dir))
     chunks = _chunk_grid(segments, fps, f0, f1, float(v.get("chunk_seconds") or 120))
-    part_dir = state_dir / ("teile" if use_cache else "vorschau_teile")
+    part_dir = state_dir / ("teile" if use_cache else ("overlay_teile" if overlay else "vorschau_teile"))
     part_dir.mkdir(exist_ok=True)
     if not use_cache:
         for old in part_dir.glob("*"):
@@ -321,10 +349,10 @@ def render_video(project: Project, config_path: str, state_dir: Path, mix_path: 
     jobs, parts = [], []
     for i, (a, b) in enumerate(chunks):
         key = _chunk_key(project, encoder, clips, segments, analysis, timeline, a, b)
-        out = part_dir / f"{a:08d}_{key}.mp4"
+        out = part_dir / f"{a:08d}_{key}{OVERLAY_CODECS[encoder][1] if overlay else '.mp4'}"
         parts.append(str(out))
         if not out.is_file():
-            jobs.append({"config": config_path, "state": str(state_dir), "index": len(jobs),
+            jobs.append({"config": config_path, "state": str(state_dir), "index": len(jobs), "kind": kind,
                          "f0": a, "f1": b, "encoder": encoder, "out": str(out)})
     reused = len(chunks) - len(jobs)
     total = sum(j["f1"] - j["f0"] for j in jobs)
@@ -355,17 +383,21 @@ def render_video(project: Project, config_path: str, state_dir: Path, mix_path: 
     list_file.write_text("".join(f"file '{quote(p)}'\n" for p in parts), encoding="utf-8")
     acfg = project["audio"]
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    print(f"Füge Video und Audio zusammen → {out_path}")
-    ff.run([
-        ff.ffmpeg(), "-hide_banner", "-y", "-loglevel", "error",
-        "-f", "concat", "-safe", "0", "-i", str(list_file),
-        "-ss", f"{f0 / fps:.3f}", "-t", f"{(f1 - f0) / fps:.3f}", "-i", str(mix_path),
-        "-map", "0:v", "-map", "1:a", "-c:v", "copy",
-        "-c:a", "aac", "-b:a", str(acfg["bitrate"]), "-ar", str(acfg["sample_rate"]),
-        "-shortest", "-movflags", "+faststart", str(out_path),
-    ])
+    print(f"Füge {'Overlay' if overlay else 'Video und Audio'} zusammen → {out_path}")
+    if overlay:
+        ff.run([ff.ffmpeg(), "-hide_banner", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0",
+                "-i", str(list_file), "-c:v", "copy", str(out_path)])
+    else:
+        ff.run([
+            ff.ffmpeg(), "-hide_banner", "-y", "-loglevel", "error",
+            "-f", "concat", "-safe", "0", "-i", str(list_file),
+            "-ss", f"{f0 / fps:.3f}", "-t", f"{(f1 - f0) / fps:.3f}", "-i", str(mix_path),
+            "-map", "0:v", "-map", "1:a", "-c:v", "copy",
+            "-c:a", "aac", "-b:a", str(acfg["bitrate"]), "-ar", str(acfg["sample_rate"]),
+            "-shortest", "-movflags", "+faststart", str(out_path),
+        ])
     keep = {Path(p).name for p in parts}
-    for old in part_dir.glob("*.mp4"):
+    for old in [q for q in part_dir.glob("*") if q.suffix in (".mp4", ".mov", ".webm")]:
         if old.name not in keep or not use_cache:
             old.unlink(missing_ok=True)
     return out_path

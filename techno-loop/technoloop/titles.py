@@ -229,7 +229,8 @@ class TitleOverlay:
                 x0, y0, x1, y1 = prog
                 xe = int(x0 + (x1 - x0) * frac)
                 if xe > x0:
-                    frame[y + y0:y + y1, x + x0:x + xe] = self.accent_bgr
+                    color = self.accent_bgr if frame.shape[2] == 3 else (*self.accent_bgr, 255)
+                    frame[y + y0:y + y1, x + x0:x + xe] = color
         card = self.cards[k] if self.cards else None
         dur = float(self.cfg.get("intro_seconds", 4.5))
         if card is not None and since < dur:

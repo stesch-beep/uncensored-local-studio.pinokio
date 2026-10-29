@@ -467,5 +467,71 @@ class AppendTest(unittest.TestCase):
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+@unittest.skipUnless(HAVE_FFMPEG, "ffmpeg missing")
+class ResolveExportTest(unittest.TestCase):
+    def test_edl_matches_render_and_overlay_has_alpha(self):
+        import re
+
+        from technoloop import cli, resolve
+
+        tmp = Path(tempfile.mkdtemp())
+        try:
+            demo.make_demo(tmp)
+            cfg = json.loads((tmp / "projekt.json").read_text())
+            cfg["video"] = {"width": 320, "height": 180, "workers": 1, "encoder": "libx264"}
+            cfg["montage"] = {"reverse_chance": 0.5}  # make sure reverse and ping-pong runs show up
+            (tmp / "projekt.json").write_text(json.dumps(cfg))
+            self.assertEqual(cli.main(["resolve", str(tmp / "projekt.json")]), 0)
+            out = tmp / "ausgabe" / "demo_techno_loop_resolve"
+            edl = (out / "demo_techno_loop_schnitt.edl").read_text()
+            clips, segments = montage.load_edl(tmp / "arbeitsordner" / "render" / "edl.json")
+            fps = 24
+
+            def frames(tc):
+                h, m, s_, f = (int(x) for x in tc.split(":"))
+                return ((h * 60 + m) * 60 + s_) * fps + f
+
+            events = []
+            for block in edl.split("\n\n"):  # read_text() turns the CRLF line ends into \\n
+                m = re.search(r"^\d+\s+(\S+)\s+V\s+C\s+(\S+) (\S+) (\S+) (\S+)", block, re.M)
+                if not m:
+                    continue
+                speed = re.search(r"^M2\s+\S+\s+(-?[\d.]+)", block, re.M)
+                events.append((m.group(1), frames(m.group(2)), frames(m.group(4)) - 3600 * fps,
+                               frames(m.group(5)) - 3600 * fps, float(speed.group(1)) if speed else fps))
+            # Events tile the whole timeline without gaps.
+            self.assertEqual(events[0][2], 0)
+            for a, b in zip(events, events[1:]):
+                self.assertEqual(a[3], b[2])
+            n_frames = int(round(segments[-1].t1 * fps))
+            self.assertEqual(events[-1][3], n_frames)
+            self.assertTrue(any(e[4] < 0 for e in events), "expected reverse events")
+            # Every record frame shows the same clip and (forward) the same source frame as the render.
+            seg_i = 0
+            for reel, src_in, r0, r1, speed in events:
+                for r in range(r0, r1):
+                    while round(segments[seg_i].t1 * fps) <= r:
+                        seg_i += 1
+                    seg = segments[seg_i]
+                    clip = clips[seg.clip]
+                    self.assertEqual(reel, resolve._reel(clip))
+                    want = int(resolve.source_indices(seg, clip, np.array([r]), fps)[0])
+                    if speed > 0:
+                        # EDL keeps whole source frames and speeds with one decimal -> within ~1.5 frames
+                        self.assertLessEqual(abs(src_in + (r - r0) * speed / fps - want), 1.5)
+                    else:
+                        self.assertGreaterEqual(want, src_in - 1)
+            # Overlay: transparent in the middle, opaque on the speakers.
+            mov = out / "demo_techno_loop_overlay_lautsprecher_titel.mov"
+            raw = subprocess.run([ff.ffmpeg(), "-v", "error", "-ss", "2", "-i", str(mov), "-frames:v", "1",
+                                  "-f", "rawvideo", "-pix_fmt", "rgba", "-"], capture_output=True).stdout
+            img = np.frombuffer(raw, np.uint8).reshape(180, 320, 4)
+            self.assertEqual(img[60, 160, 3], 0)
+            self.assertEqual(img[150, 30, 3], 255)
+            self.assertTrue((out / "demo_techno_loop_musik.wav").is_file())
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -67,8 +67,32 @@ class Sprite:
         self.shape = self.bgra.shape[:2]
 
 
+def blend_rgba(frame: np.ndarray, src: np.ndarray, x: int, y: int, opacity: float = 1.0) -> None:
+    """Premultiplied BGRA float `src` over a straight-alpha uint8 BGRA frame (overlay export)."""
+    h, w = src.shape[:2]
+    x0, y0, x1, y1 = _clip_box(frame.shape, w, h, x, y)
+    if x1 <= x0 or y1 <= y0 or opacity <= 0:
+        return
+    s = src[y0 - y:y1 - y, x0 - x:x1 - x] * opacity
+    roi = frame[y0:y1, x0:x1].astype(np.float32)
+    a = roi[..., 3:4] / 255.0
+    rgb = roi[..., :3] * a
+    sa = s[..., 3:4]
+    out_rgb = s[..., :3] + rgb * (1.0 - sa)
+    out_a = sa + a * (1.0 - sa)
+    straight = np.where(out_a > 1e-4, out_rgb / np.maximum(out_a, 1e-4), 0.0)
+    frame[y0:y1, x0:x1, :3] = np.clip(straight, 0, 255).astype(np.uint8)
+    frame[y0:y1, x0:x1, 3] = np.clip(out_a[..., 0] * 255.0, 0, 255).astype(np.uint8)
+
+
 def blend_sprite(frame: np.ndarray, sprite, x: int, y: int, opacity: float = 1.0) -> None:
-    """Premultiplied sprite (Sprite or BGRA float array) over a uint8 BGR frame, in place."""
+    """Premultiplied sprite (Sprite or BGRA float array) over a uint8 BGR frame, in place.
+
+    A 4-channel frame is treated as a transparent overlay layer (straight alpha).
+    """
+    if frame.shape[2] == 4:
+        blend_rgba(frame, sprite.bgra if isinstance(sprite, Sprite) else sprite, x, y, opacity)
+        return
     if not isinstance(sprite, Sprite):
         sprite = Sprite(sprite)
     h, w = sprite.shape
@@ -263,7 +287,34 @@ class SpeakerSprite:
         return out
 
     # -- per frame ------------------------------------------------------------
+    def _compose_rgba(self, cone: float, tweeter: float, kick: float) -> np.ndarray:
+        """Whole speaker as a premultiplied BGRA layer (for the transparent overlay export)."""
+        canvas = self.base.bgra.copy()
+        cx, cy, _ = self.woofer
+        lift = float(np.clip(1.0 + 0.45 * cone, 0.65, 1.6))
+        for layer, gain in ((self.cone, 1.0), (self.cap, 1.9)):
+            if layer is None:
+                continue
+            size = max(4, int(round(layer.shape[0] * (1.0 + self.excursion * gain * cone))))
+            scaled = cv2.resize(layer, (size, size), interpolation=cv2.INTER_LINEAR)
+            scaled[..., :3] *= lift
+            _over(canvas, scaled, int(round(cx - size / 2)), int(round(cy - size / 2)))
+        if self.dome is not None and self.tweet is not None:
+            tx, ty, _ = self.tweet
+            tsize = max(4, int(round(self.dome.shape[0] * (1.0 + 0.07 * float(tweeter)))))
+            d = cv2.resize(self.dome, (tsize, tsize), interpolation=cv2.INTER_LINEAR)
+            _over(canvas, d, int(round(tx - tsize / 2)), int(round(ty - tsize / 2)))
+        if self.led_rgb is not None and self.cfg.get("glow", True):
+            glow = self.led_rgb * (0.18 + 0.95 * float(kick))
+            alpha = np.clip(glow.max(axis=2, keepdims=True) / 255.0, 0, 1)
+            bx0, by0, _, _ = self.led_box
+            _over(canvas, np.concatenate([glow, alpha], axis=2), bx0, by0)
+        return canvas
+
     def draw(self, frame: np.ndarray, x: int, y: int, cone: float, tweeter: float, kick: float) -> None:
+        if frame.shape[2] == 4:
+            blend_rgba(frame, self._compose_rgba(float(cone), tweeter, kick), x, y)
+            return
         h, w = self.shape
         x0, y0, x1, y1 = _clip_box(frame.shape, w, h, x, y)
         if x1 <= x0 or y1 <= y0:

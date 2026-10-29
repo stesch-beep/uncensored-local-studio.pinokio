@@ -77,6 +77,7 @@ dem Bass, der Hochtöner zittert mit den Hi-Hats.
 | 2 | `2_vorschau.bat` | Rendert 2 Minuten ab Minute 5 → `ausgabe\..._vorschau.mp4` zum Prüfen |
 | 3 | `3_video_bauen.bat` | Rendert das komplette Video → `ausgabe\techno_girls_1h.mp4` + `..._youtube_beschreibung.txt` |
 | 4 | `4_song_anhaengen.bat` | Listet alle Songs aus den Suchordnern (z. B. `C:\Download\suno`), du wählst per Nummer → danach wieder Schritt 3 |
+| 5 (optional) | `5_resolve_export.bat` | Export für **DaVinci Resolve** (siehe „Andere Programme“) |
 
 **Maestro muss bei Schritt 1 laufen.** Die Adresse wird automatisch gesucht (`"url": "auto"`).
 Klappt das nicht, die Adresse aus Maestros *Open Web UI* in `projekt.json` eintragen, z. B. `"url": "http://127.0.0.1:42003"`.
@@ -184,6 +185,7 @@ Weitere Szenen-Optionen: `frames`, `variants`, `weight` (wie oft sie vorkommt), 
 | speakers | `size`, `positions`, `excursion` | 0.40, links+rechts unten, 0.085 | Größe, Position, Membranhub |
 | speakers | `led_colors` | cyan, rot | LED-Ringe |
 | speakers | `image` + `cone` | – | eigenes Lautsprecher-PNG, `cone` = [x, y, radius] der Membran (relativ) |
+| resolve | `overlay_codec` | png | `png`, `qtrle`, `prores4444`, `vp9` oder `keins` |
 | titles | `position` | bottom-center | auch `top-left`, `bottom-left`, `top-center` |
 | titles | `intro_card`, `label`, `accent`, `watermark` | | große Titel-Einblendung pro Song, Texte/Farbe, Kanalname |
 
@@ -197,7 +199,14 @@ Maestro bleibt der Generator für die Video-Clips (H3). Die anderen Programme pa
   der unter `"clips_folder"` steht (Dateiname mit `loop`, wenn Anfang = Ende).
 - **Blender / Unreal Engine**: z. B. einen echten 3D-Lautsprecher rendern (Frontansicht, PNG mit Transparenz)
   und als `speakers.image` + `speakers.cone` eintragen; oder eigene Bühnen-Clips nach `clips_folder`.
-- **DaVinci Resolve**: das fertige MP4 für Feinschliff (Grading, Intro/Outro, Logo) importieren.
+- **DaVinci Resolve**: `5_resolve_export.bat` legt `ausgabe\<name>_resolve\` an:
+  - `…_schnitt.edl` – alle Schnitte als Timeline (mit Tempo/Rückwärts), verweist auf deine Szenen-Clips,
+  - `…_overlay_lautsprecher_titel.mov` – Lautsprecher + Titel mit Transparenz für Spur V2,
+  - `…_musik.wav` – der Mix für A1, plus `LIESMICH_Resolve.txt` mit den Klicks in Resolve.
+  Zoom, Spiegeln, Farblooks und Blitze der Automatik stecken nicht im EDL – die machst du in Resolve selbst.
+  Das Overlay als PNG-MOV ist groß (ca. 20 GB pro Stunde bei 1080p); kleiner geht mit
+  `"resolve": {"overlay_codec": "vp9"}` (WebM, ob Resolve es liest, hängt von der Version ab),
+  ganz ohne Overlay: `"keins"`. Für den reinen Feinschliff kannst du auch einfach das fertige MP4 importieren.
 
 ## YouTube
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Linux/macOS: ./technoloop.sh setup | szenen | vorschau | bauen | song | demo
+# Linux/macOS: ./technoloop.sh setup | keyframes | szenen | vorschau | bauen | song | resolve | demo
 set -euo pipefail
 cd "$(dirname "$0")"
 if [ "${1:-}" = "setup" ]; then
@@ -13,6 +13,8 @@ case "${1:-}" in
   vorschau) shift; exec $PY -m technoloop bauen projekt.json --vorschau 120 --ab 5:00 "$@" ;;
   bauen) shift; exec $PY -m technoloop bauen projekt.json "$@" ;;
   song) shift; exec $PY -m technoloop song-dazu projekt.json "$@" ;;
+  keyframes) shift; exec $PY -m technoloop keyframes projekt.json "$@" ;;
+  resolve) shift; exec $PY -m technoloop resolve projekt.json "$@" ;;
   demo) $PY -m technoloop demo demo && exec $PY -m technoloop bauen demo/projekt.json ;;
-  *) echo "Benutzung: $0 setup|szenen|vorschau|bauen|song|demo"; exit 1 ;;
+  *) echo "Benutzung: $0 setup|keyframes|szenen|vorschau|bauen|song|resolve|demo"; exit 1 ;;
 esac

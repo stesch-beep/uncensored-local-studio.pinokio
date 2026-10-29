@@ -120,6 +120,10 @@ DEFAULTS = {
         "damping": 0.45,
         "glow": True,
     },
+    "resolve": {
+        # png (sicher, ca. 20 GB pro Stunde bei 1080p) | qtrle | prores4444 | vp9 (winzig, WebM) | keins
+        "overlay_codec": "png",
+    },
     "titles": {
         "enabled": True,
         "position": "bottom-center",

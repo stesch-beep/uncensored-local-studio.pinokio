@@ -92,6 +92,18 @@ def cmd_build(args) -> int:
     return 0
 
 
+def cmd_resolve(args) -> int:
+    from .render import default_workers
+    from .resolve import export_resolve
+
+    project = load_project(args.projekt)
+    mix, analysis, clips, segments, state = _prepare(project)
+    out = export_resolve(project, str(Path(args.projekt).resolve()), state, mix, clips, segments,
+                         analysis.n_frames, default_workers(project))
+    print(f"\nFERTIG: {out}\nAnleitung: {out / 'LIESMICH_Resolve.txt'}")
+    return 0
+
+
 def cmd_info(args) -> int:
     from .maestro import scene_mode
 
@@ -230,6 +242,10 @@ def main(argv=None) -> int:
     p.add_argument("--neu-schneiden", action="store_true",
                    help="Schnitt komplett neu planen (sonst bleibt der Anfang wie beim letzten Mal)")
     p.set_defaults(func=cmd_build)
+
+    p = sub.add_parser("resolve", help="Export für DaVinci Resolve: Schnittliste (EDL), Overlay mit Alpha, Musik-WAV")
+    p.add_argument("projekt", nargs="?", default="projekt.json")
+    p.set_defaults(func=cmd_resolve)
 
     p = sub.add_parser("info", help="Songs, Szenen und fertige Clips anzeigen")
     p.add_argument("projekt", nargs="?", default="projekt.json")
