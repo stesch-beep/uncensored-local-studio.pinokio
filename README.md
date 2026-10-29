@@ -96,3 +96,9 @@ curl http://127.0.0.1:1420/v1/images/generations \
 ```
 
 Replace port `1420` in these examples with the actual port shown by Pinokio.
+
+## Techno Loop video tool
+
+The [`techno-loop/`](techno-loop/README.md) folder contains a separate helper (German docs) that renders a small pool of
+scenes through Maestro's MiniMax H3 API and cuts them, beat-synchronised, into an hour-long music video with
+bass-driven speaker overlays and on-screen song titles.

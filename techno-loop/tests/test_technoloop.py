@@ -1,0 +1,264 @@
+"""Tests: python -m unittest discover -s tests   (from the techno-loop folder)."""
+
+from __future__ import annotations
+
+import json
+import shutil
+import subprocess
+import sys
+import tempfile
+import threading
+import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+import numpy as np
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from technoloop import audio, demo, ffmpeg_tools as ff, maestro, montage  # noqa: E402
+from technoloop.config import load_project, parse_song_name  # noqa: E402
+
+HAVE_FFMPEG = shutil.which("ffmpeg") is not None
+
+
+class Basics(unittest.TestCase):
+    def test_snap_frames(self):
+        self.assertEqual(maestro.snap_frames(175), 175)
+        self.assertEqual(maestro.snap_frames(180), 175)
+        self.assertEqual(maestro.snap_frames(10), 124)
+        self.assertEqual(maestro.snap_frames(999), 345)
+        for n in (124, 141, 243, 345):
+            self.assertEqual((maestro.snap_frames(n) - 5) % 17, 0)
+
+    def test_preset_with_turbo_checkbox_keeps_its_steps(self):
+        mcfg = {"steps": 4, "turbo": True, "turbo_lora": "minimax_h3_turbo_4step_ckpt500.safetensors",
+                "turbo_strength": 0.7}
+        preset = {"activated_loras": ["style.safetensors"], "loras_multipliers": "",
+                  "params": {"num_inference_steps": 4, "minimax_h3_turbo_mode": True}}
+        loras, mult, steps = maestro._lora_settings(mcfg, preset)
+        self.assertEqual(loras, ["style.safetensors", "minimax_h3_turbo_4step_ckpt500.safetensors"])
+        self.assertEqual(mult, "1.00 0.70")
+        self.assertEqual(steps, 4)
+
+    def test_parse_song_name(self):
+        self.assertEqual(parse_song_name(Path("03 - Amelie Lens - Feel It.mp3")), ("Feel It", "Amelie Lens"))
+        self.assertEqual(parse_song_name(Path("Only Title.wav")), ("Only Title", ""))
+        self.assertEqual(parse_song_name(Path("12_Artist - A - B.flac")), ("A - B", "Artist"))
+
+
+class FakeMaestro(BaseHTTPRequestHandler):
+    jobs: dict = {}
+    requests: list = []
+    uploads: list = []
+    presets: list = []
+    video_bytes = b""
+
+    def log_message(self, *args):
+        pass
+
+    def _json(self, obj, code=200):
+        data = json.dumps(obj).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):
+        if self.path.startswith("/api/v1/defaults/"):
+            model = self.path.rsplit("/", 1)[-1]
+            if model not in ("minimax_h3", "minimax_h3_ref2va"):
+                return self._json({"detail": "Unknown model"}, 404)
+            return self._json({"prompt": "default", "num_inference_steps": 20, "video_length": 124,
+                               "sliding_window_size": 345, "resolution": "864x480", "guidance_scale": 1.0,
+                               "image_prompt_type": ""})
+        if self.path == "/api/v1/presets":
+            return self._json({"presets": self.presets})
+        if self.path.startswith("/api/v1/status/"):
+            job = self.jobs[self.path.rsplit("/", 1)[-1]]
+            job["polls"] += 1
+            done = job["polls"] > 1
+            return self._json({"job_id": job["id"], "status": "completed" if done else "running",
+                               "progress": 100 if done else 50, "step": 2, "total_steps": 4, "phase": "",
+                               "message": "", "output_files": [f"{job['id']}.mp4"] if done else [],
+                               "error": None, "oom_info": None})
+        if self.path.startswith("/api/v1/file/"):
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(self.video_bytes)))
+            self.end_headers()
+            self.wfile.write(self.video_bytes)
+            return
+        self._json({"detail": "not found"}, 404)
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(length)
+        if self.path == "/api/v1/upload":
+            assert b'name="file"' in body
+            name = f"/srv/maestro/uploads/u{len(self.uploads)}.png"
+            self.uploads.append(name)
+            return self._json({"filename": name.rsplit("/", 1)[-1], "path": name, "url": "x"})
+        if self.path == "/api/v1/generate":
+            payload = json.loads(body)
+            self.requests.append(payload)
+            job_id = f"job{len(self.requests)}"
+            self.jobs[job_id] = {"id": job_id, "polls": 0}
+            return self._json({"job_id": job_id})
+        if self.path.startswith("/api/v1/cancel/"):
+            return self._json({"status": "cancelled"})
+        self._json({"detail": "not found"}, 404)
+
+
+@unittest.skipUnless(HAVE_FFMPEG, "ffmpeg missing")
+class MaestroClientTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        (self.tmp / "bilder").mkdir()
+        for name in ("girl1.png", "girl2.png", "key.png", "vorbild.jpg"):
+            (self.tmp / "bilder" / name).write_bytes(b"\x89PNG fake")
+        clip = self.tmp / "clip.mp4"
+        ff.run([ff.ffmpeg(), "-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=s=320x176:r=24",
+                "-t", "1", "-pix_fmt", "yuv420p", str(clip)])
+        FakeMaestro.video_bytes = clip.read_bytes()
+        FakeMaestro.jobs, FakeMaestro.requests, FakeMaestro.uploads, FakeMaestro.presets = {}, [], [], []
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), FakeMaestro)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _project(self, **extra):
+        cfg = {
+            "maestro": {"url": self.url, "preset": "H3 Steps4", "variants": 1, "poll_seconds": 0.01},
+            "girls": [{"name": "A", "image": "bilder/girl1.png", "look": "blonde"},
+                      {"name": "B", "image": "bilder/girl2.png", "look": "brunette"}],
+            "style_reference": "bilder/vorbild.jpg",
+            "scenes": [
+                {"id": "loop", "girls": True, "keyframe": "bilder/key.png", "action": "They dance."},
+                {"id": "omni", "girls": [1], "action": "Close-up."},
+                {"id": "crowd", "action": "Crowd jumps.", "frames": 200},
+            ],
+        }
+        cfg.update(extra)
+        path = self.tmp / "projekt.json"
+        path.write_text(json.dumps(cfg))
+        return load_project(path)
+
+    def test_render_scenes_without_preset(self):
+        project = self._project()
+        failures = maestro.render_scenes(project)
+        self.assertEqual(failures, 0)
+        loop, omni, crowd = FakeMaestro.requests
+        # Seamless loop: the same uploaded keyframe is first and last frame.
+        self.assertEqual(loop["model_type"], "minimax_h3")
+        self.assertEqual(loop["image_start"], loop["image_end"])
+        self.assertEqual(loop["image_prompt_type"], "SE")
+        self.assertIn("<Picture 1>", loop["prompt"])
+        self.assertIn("integrated_multimodal_description: [Shot 1]", loop["prompt"])
+        # H3 Turbo LoRA with 4 steps (Maestro's own Turbo checkbox would force 6).
+        self.assertEqual(loop["num_inference_steps"], 4)
+        self.assertEqual(loop["activated_loras"], ["minimax_h3_turbo_4step_ckpt500.safetensors"])
+        self.assertEqual(loop["loras_multipliers"], "0.70")
+        self.assertFalse(loop["minimax_h3_turbo_mode"])
+        self.assertEqual(loop["video_length"], 175)
+        self.assertEqual(loop["resolution"], "1280x704")
+        # Omni: identity reference of girl B + style reference.
+        self.assertEqual(omni["model_type"], "minimax_h3_ref2va")
+        refs = omni["minimax_h3_references"]
+        self.assertEqual([r["image_intent"] for r in refs], ["identity", "style"])
+        self.assertNotIn("image_start", omni)
+        self.assertIn("brunette", omni["prompt"])
+        # Text only, frames snapped to 17n+5.
+        self.assertEqual(crowd["video_length"], 192)
+        self.assertNotIn("image_start", crowd)
+        self.assertEqual(crowd["image_prompt_type"], "")
+        clips = sorted(p.name for p in project.scenes_dir.glob("*.mp4"))
+        self.assertEqual(clips, ["crowd__v1.mp4", "loop__v1.mp4", "omni__v1.mp4"])
+        meta = json.loads((project.scenes_dir / "loop__v1.json").read_text())
+        self.assertTrue(meta["loop"])
+        # Second run skips finished clips.
+        maestro.render_scenes(project)
+        self.assertEqual(len(FakeMaestro.requests), 3)
+
+    def test_preset_wins(self):
+        FakeMaestro.presets = [{"id": "p1", "name": "H3 Steps4", "model_type": "minimax_h3",
+                                "activated_loras": ["minimax_h3_turbo_4step_ckpt500.safetensors", "style.safetensors"],
+                                "loras_multipliers": "0.8 0.5",
+                                "params": {"num_inference_steps": 4, "guidance_scale": 1.0, "flow_shift": 5}}]
+        project = self._project()
+        maestro.render_scenes(project, only=["crowd"])
+        (req,) = FakeMaestro.requests
+        self.assertEqual(req["activated_loras"][1], "style.safetensors")
+        self.assertEqual(req["loras_multipliers"], "0.8 0.5")
+        self.assertEqual(req["flow_shift"], 5)
+
+
+def _synthetic_beats(bpm: float, seconds: float, sr: int = audio.ANALYSIS_SR) -> np.ndarray:
+    x = np.zeros(int(seconds * sr), np.float32)
+    k = np.arange(int(0.15 * sr)) / sr
+    kick = np.sin(2 * np.pi * 60 * k) * np.exp(-k * 25)
+    t = 0.25
+    while t < seconds - 0.2:
+        p = int(t * sr)
+        x[p:p + len(kick)] += kick
+        t += 60.0 / bpm
+    return x
+
+
+class AnalysisTest(unittest.TestCase):
+    def test_tempo(self):
+        for bpm in (122.0, 128.0, 140.0):
+            x = _synthetic_beats(bpm, 60)
+            env = audio.band_envelope(x, audio.ANALYSIS_SR, 35, 130)
+            period, phase, found = audio._comb_beats(audio.onset_envelope(env), audio.ANALYSIS_SR / audio.ENV_HOP)
+            self.assertAlmostEqual(found, bpm, delta=0.15)
+            rate = audio.ANALYSIS_SR / audio.ENV_HOP
+            first = phase / rate
+            d = (first - 0.25) % (60 / bpm)
+            self.assertLess(min(d, 60 / bpm - d), 0.03)
+
+
+@unittest.skipUnless(HAVE_FFMPEG, "ffmpeg missing")
+class BuildTest(unittest.TestCase):
+    def test_small_build(self):
+        tmp = Path(tempfile.mkdtemp())
+        try:
+            demo.make_demo(tmp)
+            cfg = json.loads((tmp / "projekt.json").read_text())
+            cfg["video"] = {"width": 640, "height": 360, "workers": 1, "clip_cache": 2, "encoder": "libx264"}
+            (tmp / "projekt.json").write_text(json.dumps(cfg))
+            project = load_project(tmp / "projekt.json")
+            mix = audio.build_mix(project)
+            self.assertAlmostEqual(mix.duration, 41 + 38 + 36 - 2 * 4, delta=0.5)
+            analysis = audio.analyze(project, mix)
+            self.assertEqual([round(b) for b in analysis.bpm], [124, 128, 132])
+            clips = montage.collect_clips(project)
+            segs = montage.plan_edl(project, clips, analysis, mix.timeline)
+            self.assertAlmostEqual(segs[0].t0, 0.0)
+            self.assertAlmostEqual(segs[-1].t1, analysis.n_frames / analysis.fps, delta=1e-6)
+            for a, b in zip(segs, segs[1:]):
+                self.assertAlmostEqual(a.t1, b.t0)
+                self.assertNotEqual(a.clip, b.clip)
+            on_beat = sum(np.min(np.abs(analysis.beats - s.t0)) < 0.02 for s in segs[1:])
+            self.assertGreaterEqual(on_beat, len(segs) - 2)
+            out = subprocess.run(
+                [sys.executable, "-m", "technoloop", "bauen", str(tmp / "projekt.json"), "--vorschau", "6", "--ab", "0:36"],
+                cwd=ROOT, capture_output=True, text=True,
+            )
+            self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+            video = tmp / "ausgabe" / "demo_techno_loop_vorschau.mp4"
+            info = ff.probe(video)
+            self.assertEqual((info["width"], info["height"]), (640, 360))
+            self.assertAlmostEqual(info["duration"], 6.0, delta=0.15)
+            self.assertTrue(info.get("has_audio"))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    unittest.main()

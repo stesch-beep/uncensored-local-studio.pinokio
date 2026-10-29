@@ -1,0 +1,134 @@
+{
+  "_hinweis": "Kopiere diese Datei nach projekt.json und passe sie an. Alle Werte, die hier fehlen, nehmen Standardwerte (siehe README).",
+  "name": "techno_girls_1h",
+  "seed": 1234,
+
+  "maestro": {
+    "_hinweis": "url: auto = Maestro wird automatisch gesucht, sonst Adresse aus Maestro 'Open Web UI' eintragen. preset = Name deines gespeicherten Maestro-Presets.",
+    "url": "auto",
+    "preset": "H3 Steps4",
+    "model": "minimax_h3",
+    "omni_model": "minimax_h3_ref2va",
+    "resolution": "1280x704",
+    "frames": 175,
+    "steps": 4,
+    "turbo": true,
+    "turbo_strength": 0.7,
+    "variants": 2
+  },
+
+  "girls": [
+    {
+      "name": "Girl 1",
+      "image": "bilder/girl1.png",
+      "look": "long platinum-blonde hair, black cropped top, silver chain necklace, black cargo pants"
+    },
+    {
+      "name": "Girl 2",
+      "image": "bilder/girl2.png",
+      "look": "dark brown hair in two high buns, neon-cyan mesh top, black shorts, fishnet sleeves"
+    }
+  ],
+
+  "style": "Cinematic live festival concert footage at night, gigantic main stage, dense haze, deep blue and cyan lighting with red accents, sharp laser beams, high contrast, anamorphic wide lens, 35mm film grain",
+  "style_reference": "bilder/vorbild.jpg",
+
+  "scenes": [
+    {
+      "id": "dj_pult",
+      "girls": true,
+      "keyframe": "bilder/keyframe_dj_pult.png",
+      "tags": ["girls"],
+      "action": "Behind a huge glowing DJ booth at the front of the main stage both women play techno: the left one turns the mixer knobs, the right one raises both hands and bobs her head to the beat. Behind them a gigantic mechanical sea turtle sculpture with glowing LED lines hovers over the stage and slowly moves its fins. Blue light beams sweep through the haze. The camera slowly pushes in."
+    },
+    {
+      "id": "closeup_girl1",
+      "girls": [0],
+      "tags": ["girls", "closeup"],
+      "action": "Close-up of the woman wearing headphones, eyes closed, nodding to the kick drum with her fingers on a glowing jog wheel. Blue and red strobe flashes light her face, shallow depth of field."
+    },
+    {
+      "id": "closeup_girl2",
+      "girls": [1],
+      "tags": ["girls", "closeup"],
+      "action": "Close-up of the woman tossing her hair and smiling at the crowd while dancing behind the decks, red rim light, laser fans behind her."
+    },
+    {
+      "id": "tanz_buehnenrand",
+      "girls": true,
+      "tags": ["girls"],
+      "action": "Both women dance side by side at the edge of the stage, seen from a low angle in the crowd, arms raised, confetti falling, laser fans spreading above them."
+    },
+    {
+      "id": "crowd_haende",
+      "tags": ["crowd"],
+      "reverse_ok": true,
+      "action": "A sea of thousands of raised hands and phone lights in front of the stage, silhouetted against bright blue stage lights. The crowd jumps in unison while the camera drifts slowly over the heads."
+    },
+    {
+      "id": "schildkroeten_buehne",
+      "tags": ["stage"],
+      "reverse_ok": true,
+      "action": "Wide drone shot of the gigantic festival stage shaped like a giant sea turtle with glowing LED patterns on its shell, slowly flapping its huge fins above an enormous dancing crowd at night, light beams shooting into the sky."
+    },
+    {
+      "id": "laser_nebel",
+      "tags": ["lights"],
+      "reverse_ok": true,
+      "action": "Green and blue laser beams cut through thick haze above the crowd, forming moving fans and tunnels that pulse to the music."
+    },
+    {
+      "id": "boxenwand",
+      "tags": ["speakers"],
+      "reverse_ok": true,
+      "action": "Extreme close-up of a massive wall of black concert subwoofers, the speaker cones pumping hard with every kick, haze vibrating in the stage light."
+    },
+    {
+      "id": "pyro_drop",
+      "tags": ["stage"],
+      "reverse_ok": true,
+      "action": "Flame cannons blast columns of fire on both sides of the stage while CO2 jets shoot white fog upwards and the crowd explodes with joy."
+    },
+    {
+      "id": "mixer_haende",
+      "tags": ["closeup"],
+      "reverse_ok": true,
+      "action": "Close-up of a woman's hands with black nail polish pushing faders and twisting knobs on a glowing DJ mixer, LED level meters bouncing, blue light."
+    }
+  ],
+
+  "songs_folder": "musik",
+  "songs": [],
+
+  "audio": {
+    "duration_minutes": 60,
+    "crossfade_seconds": 6,
+    "target_lufs": -14,
+    "shuffle": false
+  },
+
+  "video": {
+    "width": 1920,
+    "height": 1080,
+    "fps": 24,
+    "codec": "h264",
+    "quality": 19,
+    "workers": 3
+  },
+
+  "speakers": {
+    "enabled": true,
+    "size": 0.40,
+    "positions": ["bottom-left", "bottom-right"],
+    "led_colors": ["#00c8ff", "#ff3b30"],
+    "excursion": 0.085
+  },
+
+  "titles": {
+    "enabled": true,
+    "position": "bottom-center",
+    "label": "NOW PLAYING",
+    "accent": "#00c8ff",
+    "watermark": ""
+  }
+}

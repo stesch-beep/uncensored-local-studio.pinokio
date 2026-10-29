@@ -1,0 +1,237 @@
+"""Project configuration: defaults, loading and path resolution."""
+
+from __future__ import annotations
+
+import copy
+import json
+import os
+import re
+from dataclasses import dataclass
+from pathlib import Path
+
+DEFAULTS = {
+    "name": "techno_loop_1h",
+    "work_dir": "arbeitsordner",
+    "output_dir": "ausgabe",
+    "seed": 1234,
+    "maestro": {
+        "url": "auto",
+        # H3 First / Last (Pruned 20B). With start = end image the clip loops seamlessly.
+        "model": "minimax_h3",
+        # H3 Omni Reference (Pruned 20B) for scenes that only use identity images.
+        "omni_model": "minimax_h3_ref2va",
+        # Name of a preset saved in Maestro (e.g. "H3 Steps4"). If found, its
+        # steps/LoRAs/params win over the values below.
+        "preset": "H3 Steps4",
+        "resolution": "1280x704",
+        "frames": 175,
+        "steps": 4,
+        "turbo": True,
+        "turbo_lora": "minimax_h3_turbo_4step_ckpt500.safetensors",
+        "turbo_strength": 0.7,
+        "variants": 2,
+        "poll_seconds": 3,
+        "timeout_minutes": 180,
+        "workspace": "",
+        "extra_params": {},
+    },
+    "style": (
+        "Cinematic live festival concert footage at night, gigantic main stage, "
+        "dense haze, deep blue and cyan lighting with red accents, sharp laser beams, "
+        "high contrast, anamorphic wide lens, 35mm film grain"
+    ),
+    "soundscape": "Huge festival crowd cheering, deep sub-bass rumble from the sound system, no human voices.",
+    "music": "Driving peak-time techno at 130 BPM with a heavy four-on-the-floor kick.",
+    "style_reference": "",
+    "girls": [],
+    "scenes": [],
+    "clips_folder": "",
+    "songs_folder": "musik",
+    "songs": [],
+    "audio": {
+        "crossfade_seconds": 6.0,
+        "target_lufs": -14.0,
+        "true_peak": -1.0,
+        "duration_minutes": 60,
+        "shuffle": False,
+        "sample_rate": 48000,
+        "bitrate": "320k",
+        "end_fade_seconds": 6.0,
+    },
+    "video": {
+        "width": 1920,
+        "height": 1080,
+        "fps": 24,
+        "codec": "h264",
+        "encoder": "auto",
+        "quality": 19,
+        "workers": 3,
+        "clip_cache": 4,
+    },
+    "montage": {
+        "cut_beats_high": [4, 8, 8, 16],
+        "cut_beats_low": [8, 16, 16, 32],
+        "min_segment_seconds": 1.5,
+        "speed_range": [0.92, 1.08],
+        "zoom_range": [1.0, 1.18],
+        "mirror": True,
+        "reverse_chance": 0.15,
+        "flash_chance": 0.12,
+        "fade_chance": 0.10,
+        "fade_frames": 8,
+        "avoid_repeat": 4,
+        "bass_zoom": 0.02,
+        "light_pump": 0.12,
+        "grain": 0.25,
+        "vignette": 0.35,
+        "grades": True,
+    },
+    "speakers": {
+        "enabled": True,
+        "image": "",
+        "cone": [0.5, 0.64, 0.33],
+        "tweeter": [0.5, 0.2, 0.1],
+        "size": 0.40,
+        "positions": ["bottom-left", "bottom-right"],
+        "margin": 0.02,
+        "excursion": 0.085,
+        "led_colors": ["#00c8ff", "#ff3b30"],
+        "spring_hz": 9.0,
+        "damping": 0.45,
+        "glow": True,
+    },
+    "titles": {
+        "enabled": True,
+        "position": "bottom-center",
+        "font": "",
+        "font_light": "",
+        "label": "NOW PLAYING",
+        "accent": "#00c8ff",
+        "show_number": True,
+        "show_progress": True,
+        "intro_card": True,
+        "intro_seconds": 4.5,
+        "scale": 1.0,
+        "watermark": "",
+    },
+}
+
+AUDIO_EXTENSIONS = {".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wma"}
+VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm", ".m4v", ".avi"}
+
+
+class ConfigError(RuntimeError):
+    pass
+
+
+def _deep_merge(base: dict, override: dict) -> dict:
+    result = copy.deepcopy(base)
+    for key, value in (override or {}).items():
+        if key.startswith("_"):
+            continue  # "_hinweis" style comment keys
+        if isinstance(value, dict) and isinstance(result.get(key), dict):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = copy.deepcopy(value)
+    return result
+
+
+@dataclass
+class Song:
+    path: Path
+    title: str
+    artist: str
+    explicit: bool = False  # title given in projekt.json -> never replaced by file tags
+
+    @property
+    def display(self) -> str:
+        return f"{self.artist} – {self.title}" if self.artist else self.title
+
+
+@dataclass
+class Project:
+    data: dict
+    base_dir: Path
+
+    def __getitem__(self, key):
+        return self.data[key]
+
+    def get(self, key, default=None):
+        return self.data.get(key, default)
+
+    def path(self, value) -> Path | None:
+        if not value:
+            return None
+        p = Path(os.path.expandvars(os.path.expanduser(str(value))))
+        return p if p.is_absolute() else (self.base_dir / p).resolve()
+
+    @property
+    def work_dir(self) -> Path:
+        return self.path(self.data["work_dir"])
+
+    @property
+    def scenes_dir(self) -> Path:
+        return self.work_dir / "szenen"
+
+    @property
+    def cache_dir(self) -> Path:
+        return self.work_dir / "cache"
+
+    @property
+    def output_dir(self) -> Path:
+        return self.path(self.data["output_dir"])
+
+    def songs(self) -> list[Song]:
+        songs: list[Song] = []
+        for entry in self.data.get("songs") or []:
+            if isinstance(entry, str):
+                entry = {"file": entry}
+            path = self.path(entry.get("file"))
+            if not path or not path.is_file():
+                raise ConfigError(f"Song nicht gefunden: {entry.get('file')}")
+            title, artist = parse_song_name(path)
+            songs.append(Song(
+                path, entry.get("title") or title, entry.get("artist", artist), explicit=bool(entry.get("title")),
+            ))
+        if not songs:
+            folder = self.path(self.data.get("songs_folder"))
+            if folder and folder.is_dir():
+                for path in sorted(folder.iterdir(), key=lambda p: p.name.lower()):
+                    if path.suffix.lower() in AUDIO_EXTENSIONS:
+                        title, artist = parse_song_name(path)
+                        songs.append(Song(path, title, artist))
+        if not songs:
+            raise ConfigError(
+                "Keine Songs gefunden. Lege MP3/WAV/FLAC-Dateien in den Ordner "
+                f"'{self.data.get('songs_folder')}' oder trage sie unter \"songs\" ein."
+            )
+        return songs
+
+
+def parse_song_name(path: Path) -> tuple[str, str]:
+    """'03 - Artist - Title.mp3' -> ('Title', 'Artist'); 'Title.mp3' -> ('Title', '')."""
+    stem = re.sub(r"^\s*\d{1,3}\s*[-._)]\s*", "", path.stem)
+    stem = stem.replace("_", " ").strip()
+    parts = [p.strip() for p in re.split(r"\s+[-–—]\s+", stem) if p.strip()]
+    if len(parts) >= 2:
+        return " - ".join(parts[1:]), parts[0]
+    return stem, ""
+
+
+def load_project(path: str | os.PathLike) -> Project:
+    config_path = Path(path).resolve()
+    if not config_path.is_file():
+        raise ConfigError(f"Projektdatei nicht gefunden: {config_path}")
+    try:
+        raw = json.loads(config_path.read_text(encoding="utf-8-sig"))
+    except json.JSONDecodeError as error:
+        raise ConfigError(
+            f"{config_path.name} ist kein gültiges JSON (Zeile {error.lineno}, Spalte {error.colno}): {error.msg}"
+        ) from error
+    project = Project(_deep_merge(DEFAULTS, raw), config_path.parent)
+    for index, scene in enumerate(project.data["scenes"]):
+        if not scene.get("id"):
+            raise ConfigError(f"Szene {index + 1} hat keine \"id\".")
+        if not re.fullmatch(r"[A-Za-z0-9_\-]+", scene["id"]):
+            raise ConfigError(f"Szenen-id '{scene['id']}' darf nur Buchstaben, Zahlen, _ und - enthalten.")
+    return project
