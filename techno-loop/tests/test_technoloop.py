@@ -246,6 +246,7 @@ class MaestroClientTest(unittest.TestCase):
 class FakeComfy(BaseHTTPRequestHandler):
     prompts: list = []
     uploads: list = []
+    freed = 0
     image_bytes = b""
 
     def log_message(self, *args):
@@ -260,6 +261,9 @@ class FakeComfy(BaseHTTPRequestHandler):
 
     def do_POST(self):
         body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        if self.path == "/free":
+            FakeComfy.freed += 1
+            return self._json({})
         if self.path == "/upload/image":
             name = f"up{len(self.uploads)}.png"
             self.uploads.append(name)
@@ -269,6 +273,8 @@ class FakeComfy(BaseHTTPRequestHandler):
             return self._json({"prompt_id": f"p{len(self.prompts)}"})
 
     def do_GET(self):
+        if self.path == "/system_stats":
+            return self._json({"system": {"comfyui_version": "0.4"}, "devices": []})
         if self.path.startswith("/history/"):
             pid = self.path.rsplit("/", 1)[-1]
             return self._json({pid: {"outputs": {"9": {"images": [{"filename": "out.png", "subfolder": "",
@@ -295,7 +301,7 @@ class KeyframeTest(unittest.TestCase):
             (self.tmp / "bilder" / name).write_bytes(png.tobytes())
         FakeMaestro.jobs, FakeMaestro.requests, FakeMaestro.uploads, FakeMaestro.presets = {}, [], [], []
         FakeMaestro.models = {"minimax_h3", "minimax_h3_ref2va", "krea2_turbo_edit"}
-        FakeComfy.prompts, FakeComfy.uploads = [], []
+        FakeComfy.prompts, FakeComfy.uploads, FakeComfy.freed = [], [], 0
         self.servers = []
         for handler in (FakeMaestro, FakeComfy):
             srv = ThreadingHTTPServer(("127.0.0.1", 0), handler)
@@ -347,6 +353,38 @@ class KeyframeTest(unittest.TestCase):
         # Second run: keyframe exists -> nothing generated.
         make_keyframes(project)
         self.assertEqual(sum(1 for r in FakeMaestro.requests if r["model_type"] == "krea2_turbo_edit"), 1)
+
+    def test_comfyui_template_without_placeholders(self):
+        """An unmodified API export (e.g. the Qwen Image 2.1 edit template with flattened subgraph ids)."""
+        from technoloop.keyframes import make_keyframes
+
+        workflow = {
+            "470": {"class_type": "LoadImage", "inputs": {"image": "a.png"}},
+            "475": {"class_type": "LoadImage", "inputs": {"image": "b.png"}},
+            "480:7": {"class_type": "TextEncodeQwenImage21", "inputs": {
+                "prompt": "put the shirt on", "clip": ["480:2", 0], "image_1": ["470", 0], "image_2": ["475", 0]}},
+            "480:8": {"class_type": "TextEncodeQwenImage21", "inputs": {"prompt": "", "clip": ["480:2", 0]}},
+            "480:9": {"class_type": "ReferenceLatent", "inputs": {"conditioning": ["480:7", 0]}},
+            "480:3": {"class_type": "KSampler", "inputs": {"seed": 1, "positive": ["480:9", 0],
+                                                           "negative": ["480:8", 0]}},
+            "9": {"class_type": "SaveImage", "inputs": {"images": ["480:5", 0]}},
+        }
+        (self.tmp / "wf.json").write_text(json.dumps(workflow))
+        project = self._project({"engine": "comfyui", "comfyui_url": self.comfy_url, "comfyui_workflow": "wf.json"})
+        self.assertEqual(make_keyframes(project), 0)
+        (graph,) = FakeComfy.prompts
+        self.assertIn("image 1", graph["480:7"]["inputs"]["prompt"])   # positive prompt found via the sampler
+        self.assertEqual(graph["480:8"]["inputs"]["prompt"], "")          # negative left alone
+        self.assertEqual([graph["470"]["inputs"]["image"], graph["475"]["inputs"]["image"]], ["up0.png", "up1.png"])
+        self.assertEqual(FakeComfy.freed, 1)  # VRAM handed back for the H3 renders
+
+    def test_keyframe_is_cropped_to_video_aspect(self):
+        import cv2
+
+        img = np.zeros((900, 600, 3), np.uint8)
+        cv2.imwrite(str(self.tmp / "portrait.png"), img)
+        out = maestro.prepare_keyframe(self.tmp / "portrait.png", "1280x704", self.tmp)
+        self.assertEqual(cv2.imread(str(out)).shape[:2], (704, 1280))
 
     def test_qwen_image_21_when_available(self):
         from technoloop.keyframes import make_keyframes

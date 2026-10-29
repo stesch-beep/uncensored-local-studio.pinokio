@@ -77,6 +77,9 @@ class MaestroClient:
         tmp.replace(dest)
 
 
+LOCAL_PORTS = [8188, 8189, 7860, 7861, 8000, 8080, *range(42000, 42300)]
+
+
 def _looks_like_maestro(url: str) -> bool:
     client = MaestroClient(url, timeout=2.0)
     try:
@@ -85,28 +88,98 @@ def _looks_like_maestro(url: str) -> bool:
         return False
 
 
-def connect(url: str | None) -> MaestroClient:
-    """Use the configured address; if it is 'auto' or unreachable, look for Maestro on local ports."""
-    if url and url != "auto" and _looks_like_maestro(url):
-        return MaestroClient(url)
-    # Pinokio hands out ports from 42000 upwards; also try common defaults.
-    for port in [*range(42000, 42300), 7860, 7861, 8000, 8080]:
+def _looks_like_comfyui(url: str) -> bool:
+    try:
+        stats = MaestroClient(url, timeout=2.0).get_json("/system_stats")
+    except Exception:
+        return False
+    return isinstance(stats, dict) and "system" in stats and "devices" in stats
+
+
+def find_local(probe, url: str | None = None) -> str | None:
+    """`url` if it answers, otherwise the first local port (Pinokio: 42000+) that passes `probe`."""
+    if url and url != "auto" and probe(url):
+        return url.rstrip("/")
+    for port in LOCAL_PORTS:
         try:
             with socket.create_connection(("127.0.0.1", port), timeout=0.05):
                 pass
         except OSError:
             continue
         candidate = f"http://127.0.0.1:{port}"
-        if _looks_like_maestro(candidate):
-            if url and url != "auto":
-                print(f"Maestro nicht unter {url}, aber unter {candidate} gefunden.")
-            else:
-                print(f"Maestro gefunden: {candidate}")
-            return MaestroClient(candidate)
-    raise MaestroError(
-        f"Maestro ist nicht erreichbar ({url or 'auto'}). Starte Maestro in Pinokio und trage die Adresse aus "
-        "'Open Web UI' in projekt.json unter maestro.url ein."
-    )
+        if candidate != url and probe(candidate):
+            return candidate
+    return None
+
+
+def connect(url: str | None) -> MaestroClient:
+    """Use the configured address; if it is 'auto' or unreachable, look for Maestro on local ports."""
+    found = find_local(_looks_like_maestro, url)
+    if not found:
+        raise MaestroError(
+            f"Maestro ist nicht erreichbar ({url or 'auto'}). Starte Maestro in Pinokio und trage die Adresse aus "
+            "'Open Web UI' in projekt.json unter maestro.url ein."
+        )
+    if url and url != "auto" and found != url.rstrip("/"):
+        print(f"Maestro nicht unter {url}, aber unter {found} gefunden.")
+    elif not url or url == "auto":
+        print(f"Maestro gefunden: {found}")
+    return MaestroClient(found)
+
+
+def free_comfyui_vram(project: Project) -> None:
+    """ComfyUI (e.g. running in Pinokio next to Maestro) keeps its models in VRAM; release them
+    before Maestro needs the 16 GB."""
+    if not project["maestro"].get("free_comfyui_vram", True):
+        return
+    url = find_local(_looks_like_comfyui, project["keyframes"].get("comfyui_url"))
+    if not url:
+        return
+    try:
+        MaestroClient(url, timeout=10).post_json("/free", {"unload_models": True, "free_memory": True})
+        print(f"ComfyUI ({url}): Grafikspeicher freigegeben.")
+    except MaestroError:
+        pass
+
+
+def release_maestro_vram(project: Project) -> None:
+    """Ask a running Maestro to unload its model (before ComfyUI renders keyframes)."""
+    url = find_local(_looks_like_maestro, project["maestro"].get("url"))
+    if not url:
+        return
+    try:
+        MaestroClient(url, timeout=30).post_json("/api/v1/system/release-model", {})
+        print(f"Maestro ({url}): Grafikspeicher freigegeben.")
+    except MaestroError:
+        pass
+
+
+def prepare_keyframe(local: Path, resolution: str, cache_dir: Path) -> Path:
+    """Crop/scale a keyframe to the video resolution (H3 would otherwise stretch it)."""
+    import cv2
+
+    img = cv2.imread(str(local), cv2.IMREAD_COLOR)
+    if img is None:
+        return local
+    w, _, h = str(resolution).partition("x")
+    try:
+        tw, th = int(w), int(h)
+    except ValueError:
+        return local
+    ih, iw = img.shape[:2]
+    if (iw, ih) == (tw, th):
+        return local
+    scale = max(tw / iw, th / ih)
+    nw, nh = max(tw, round(iw * scale)), max(th, round(ih * scale))
+    img = cv2.resize(img, (nw, nh), interpolation=cv2.INTER_AREA if scale < 1 else cv2.INTER_CUBIC)
+    x0 = (nw - tw) // 2
+    y0 = int(min(nh - th, max(0, (nh - th) * 0.4)))  # portrait sources: keep the upper part (faces)
+    if abs(iw / ih - tw / th) > 0.15:
+        print(f"  Hinweis: {local.name} hat ein anderes Seitenverhältnis ({iw}x{ih}) – auf {tw}x{th} zugeschnitten.")
+    out = cache_dir / "keyframes_16x9" / f"{local.stem}_{tw}x{th}.png"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(out), img[y0:y0 + th, x0:x0 + tw])
+    return out
 
 
 # ── prompts ─────────────────────────────────────────────────────────────────
@@ -358,6 +431,8 @@ def render_scenes(project: Project, *, only: list[str] | None = None, force: boo
     out_dir.mkdir(parents=True, exist_ok=True)
 
     client = MaestroClient(url or mcfg["url"]) if dry_run else connect(url or mcfg["url"])
+    if not dry_run:
+        free_comfyui_vram(project)
     preset = None if dry_run else _find_preset(client, mcfg.get("preset", ""))
     if preset:
         print(f"Maestro-Preset '{preset.get('name')}' gefunden – Schritte/LoRAs kommen aus dem Preset.")
@@ -420,6 +495,8 @@ def render_scenes(project: Project, *, only: list[str] | None = None, force: boo
             local = keyframe_path_for(project, scene)
             if not local or not local.is_file():
                 raise ConfigError(f"Keyframe für Szene '{scene['id']}' fehlt: {local}")
+            if not dry_run:
+                local = prepare_keyframe(local, scene.get("resolution") or mcfg["resolution"], project.cache_dir)
             keyframe_path = upload(local)
         elif mode == "omni":
             references = []

@@ -18,7 +18,8 @@ import uuid
 from pathlib import Path
 
 from .config import ConfigError, Project
-from .maestro import MaestroClient, MaestroError, _cast, connect, keyframe_path_for, run_job, scene_seed
+from .maestro import (MaestroClient, MaestroError, _cast, _looks_like_comfyui, connect, find_local,
+                      free_comfyui_vram, keyframe_path_for, release_maestro_vram, run_job, scene_seed)
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 
@@ -171,7 +172,7 @@ def fill_workflow(workflow: dict, values: dict) -> dict:
         return value
 
     wf = sub(wf)
-    nodes = sorted(wf.items(), key=lambda kv: int(kv[0]) if str(kv[0]).isdigit() else 0)
+    nodes = sorted(wf.items(), key=lambda kv: _node_order(kv[0]))
     if "IMAGE1" not in found:
         loaders = [n for _, n in nodes if n.get("class_type") == "LoadImage"]
         for node, key in zip(loaders, ("IMAGE1", "IMAGE2")):
@@ -182,12 +183,53 @@ def fill_workflow(workflow: dict, values: dict) -> dict:
             for name in ("seed", "noise_seed"):
                 if isinstance(node.get("inputs", {}).get(name), int):
                     node["inputs"][name] = values["SEED"]
-    if "PROMPT" not in found:
+    if "PROMPT" not in found and not _set_positive_prompt(wf, values["PROMPT"]):
         raise ConfigError(
-            "Im ComfyUI-Workflow fehlt der Platzhalter {{PROMPT}}. Schreibe {{PROMPT}} in das positive "
+            "Im ComfyUI-Workflow wurde kein Prompt-Feld gefunden. Schreibe {{PROMPT}} in das positive "
             "Prompt-Feld und exportiere den Workflow erneut mit 'Export (API)'."
         )
     return wf
+
+
+def _node_order(node_id) -> tuple:
+    """'12' < '470' < '470:3' (flattened subgraph ids from ComfyUI's API export)."""
+    parts = []
+    for part in str(node_id).split(":"):
+        parts.append(int(part) if part.isdigit() else 0)
+    return tuple(parts)
+
+
+def _set_positive_prompt(wf: dict, prompt: str) -> bool:
+    """Find the positive prompt of an unmodified exported workflow: walk upstream from every
+    'positive' input (sampler / guider) to the first node with a text field."""
+    text_keys = ("text", "prompt", "text_g", "positive_prompt")
+    starts = [n["inputs"]["positive"] for n in wf.values()
+              if isinstance(n.get("inputs", {}).get("positive"), list)]
+    done = False
+    for link in starts:
+        queue, seen = [str(link[0])], set()
+        while queue:
+            nid = queue.pop(0)
+            if nid in seen or nid not in wf:
+                continue
+            seen.add(nid)
+            inputs = wf[nid].get("inputs", {})
+            key = next((k for k in text_keys if isinstance(inputs.get(k), str)), None)
+            if key:
+                inputs[key] = prompt
+                done = True
+                break
+            queue += [str(v[0]) for v in inputs.values() if isinstance(v, list) and len(v) == 2]
+    if done:
+        return True
+    for _, node in sorted(wf.items(), key=lambda kv: _node_order(kv[0])):
+        if "TextEncode" in str(node.get("class_type")):
+            inputs = node.get("inputs", {})
+            key = next((k for k in text_keys if isinstance(inputs.get(k), str)), None)
+            if key:
+                inputs[key] = prompt
+                return True
+    return False
 
 
 def _comfy_keyframe(client: ComfyClient, project: Project, scene: dict, images: list[Path],
@@ -247,9 +289,15 @@ def make_keyframes(project: Project, *, only=None, force=False, dry_run=False, u
         if not wf_path or not wf_path.is_file():
             raise ConfigError("keyframes.comfyui_workflow: Pfad zur Workflow-Datei (API-Format) fehlt.")
         workflow = json.loads(wf_path.read_text(encoding="utf-8"))
-        client = ComfyClient(kcfg["comfyui_url"])
+        comfy_url = find_local(_looks_like_comfyui, kcfg.get("comfyui_url"))
+        if not comfy_url:
+            raise MaestroError("ComfyUI nicht gefunden – in Pinokio starten oder keyframes.comfyui_url eintragen.")
+        print(f"ComfyUI: {comfy_url}")
+        release_maestro_vram(project)
+        client = ComfyClient(comfy_url)
     else:
         client = connect(url or project["maestro"]["url"])
+        free_comfyui_vram(project)
         defaults = None
         for model in [kcfg["model"]] + ([kcfg["fallback_model"]] if kcfg.get("fallback_model") else []):
             try:
@@ -286,6 +334,11 @@ def make_keyframes(project: Project, *, only=None, force=False, dry_run=False, u
                 print(f"  FEHLER: {error}")
                 if "nicht erreichbar" in str(error):
                     raise
+    if engine == "comfyui":
+        try:  # hand the VRAM back for the H3 renders in Maestro
+            client.post_json("/free", {"unload_models": True, "free_memory": True})
+        except MaestroError:
+            pass
     print("\nKeyframes fertig. Prüfe die Bilder – unpassende löschen oder durch eine __alt-Variante ersetzen, "
           "dann '1_szenen_rendern.bat'. Szenen mit Keyframe werden als nahtlose Loops gerendert.")
     return failures

@@ -139,13 +139,30 @@ Girls sehen in allen Clips gleich aus.
 > kommerzielle Nutzung. Ist dein YouTube-Kanal monetarisiert, gilt das als kommerziell: dann
 > `"model": "krea2_turbo_edit"` nehmen oder die Lizenz bei Qwen klären.
 
-Lieber **ComfyUI** (z. B. mit deinem eigenen Girl-LoRA oder PuLID/FaceID)? Workflow in ComfyUI öffnen,
-ins positive Prompt-Feld `{{PROMPT}}` schreiben, mit **Export (API)** speichern und eintragen:
-```json
-"keyframes": {"engine": "comfyui", "comfyui_url": "http://127.0.0.1:8188", "comfyui_workflow": "bilder/girls_workflow_api.json"}
-```
-Die beiden ersten `LoadImage`-Knoten bekommen `girl1.png` / `girl2.png` (oder Platzhalter `{{IMAGE1}}`, `{{IMAGE2}}`),
-`seed` wird pro Szene gesetzt (oder `{{SEED}}`), Größe über `{{WIDTH}}`/`{{HEIGHT}}`.
+### Keyframes mit ComfyUI (auch unter Pinokio)
+
+ComfyUI aus Pinokio wird **automatisch gefunden** (`"comfyui_url": "auto"`, auch auf den wechselnden
+Pinokio-Ports). So stellst du um:
+
+1. ComfyUI in Pinokio starten, einen Workflow öffnen – z. B. aus den Vorlagen **Qwen Image 2.1 → Image Edit**
+   oder deinen eigenen mit Girl-LoRA / PuLID. Bild-Seitenverhältnis am besten auf 16:9 stellen.
+2. **Workflow → Export (API)** und als `bilder\comfyui_workflow.json` speichern. Platzhalter sind nicht nötig:
+   Das Tool setzt den Prompt in das positive Prompt-Feld (vom Sampler aus gesucht), die beiden ersten
+   `LoadImage`-Knoten bekommen `girl1.png` / `girl2.png`, `seed` wird pro Szene neu gesetzt.
+   Wer es genau steuern will, schreibt `{{PROMPT}}`, `{{IMAGE1}}`, `{{IMAGE2}}`, `{{SEED}}`, `{{WIDTH}}`,
+   `{{HEIGHT}}` in die passenden Felder.
+3. In `projekt.json`:
+   ```json
+   "keyframes": {"engine": "comfyui", "comfyui_workflow": "bilder/comfyui_workflow.json"}
+   ```
+
+**Grafikspeicher:** Maestro und ComfyUI können gleichzeitig in Pinokio laufen. Vor den ComfyUI-Keyframes
+bittet das Tool Maestro, sein Modell zu entladen; danach gibt es ComfyUIs Speicher wieder frei, und auch
+vor jedem H3-Rendern wird ein laufendes ComfyUI geleert (`"maestro": {"free_comfyui_vram": true}`).
+So kommen sich die beiden auf der 16-GB-Karte nicht in die Quere.
+
+Keyframes mit anderem Seitenverhältnis (z. B. Hochformat aus Fooocus/ComfyUI) werden vor dem Hochladen
+automatisch auf die Videogröße zugeschnitten, damit H3 nichts verzerrt.
 
 ## Wie „H3 Steps4“ benutzt wird
 
@@ -211,8 +228,8 @@ Weitere Szenen-Optionen: `frames`, `variants`, `weight` (wie oft sie vorkommt), 
 
 Maestro bleibt der Generator für die Video-Clips (H3). Die anderen Programme passen so dazu:
 
-- **ComfyUI**: als Keyframe-Generator direkt eingebunden (siehe oben). **Fooocus**: Bilder dort erzeugen und
-  als `bilder\keyframes\<szenen-id>.png` speichern – werden automatisch benutzt.
+- **ComfyUI** (auch aus Pinokio): als Keyframe-Generator direkt eingebunden, wird automatisch gefunden (siehe oben).
+  **Fooocus**: Bilder dort erzeugen und als `bilder\keyframes\<szenen-id>.png` speichern – werden automatisch benutzt.
 - **MiniMax H3 Studio** oder **ComfyUI-H3-Workflows**: fertige Clips dort erzeugen und in einen Ordner legen,
   der unter `"clips_folder"` steht (Dateiname mit `loop`, wenn Anfang = Ende).
 - **Blender / Unreal Engine**: z. B. einen echten 3D-Lautsprecher rendern (Frontansicht, PNG mit Transparenz)

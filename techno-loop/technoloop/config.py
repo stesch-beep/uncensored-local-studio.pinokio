@@ -36,6 +36,7 @@ DEFAULTS = {
         "poll_seconds": 3,
         "timeout_minutes": 180,
         "workspace": "",
+        "free_comfyui_vram": True,  # läuft ComfyUI nebenbei, dessen Grafikspeicher vor H3 freigeben
         "extra_params": {},
     },
     "keyframes": {
@@ -48,7 +49,7 @@ DEFAULTS = {
         "folder": "bilder/keyframes",
         "candidates": 1,
         "extra_params": {},
-        "comfyui_url": "http://127.0.0.1:8188",
+        "comfyui_url": "auto",           # auto = ComfyUI unter Pinokio automatisch suchen
         "comfyui_workflow": "",          # Workflow im API-Format (ComfyUI: "Export (API)")
     },
     "style": (
