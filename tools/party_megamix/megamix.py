@@ -59,7 +59,8 @@ FPS_ENV = SR / HOP
 
 # ----------------------------------------------------------------------------- utils
 def run(cmd, **kw):
-    return subprocess.run(cmd, capture_output=True, text=True, **kw)
+    # ffprobe prints UTF-8; Windows would otherwise decode with cp1252 and crash on umlauts
+    return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", **kw)
 
 
 def ffprobe(path: Path) -> dict:
@@ -620,6 +621,10 @@ def main():
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--render", action="store_true", help="zusaetzlich 1080p-MP4 mit ffmpeg rendern")
     a = ap.parse_args()
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
     if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
         sys.exit("ffmpeg/ffprobe nicht gefunden (PATH).")
